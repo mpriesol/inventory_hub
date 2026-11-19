@@ -68,6 +68,7 @@ global.fetch = async (url, request = {}) => {
   assert.equal(request.cache, 'no-store'); assert.equal(request.credentials, 'same-origin');
   if (request.method === 'GET') {
     reads.push({ path, query: parsed.search });
+    if (path === '/api/settings/catalogs/availabilities') return reply({ items: [{ id: 1, label: 'SKLADOM', is_active: true, sort_order: 0, revision: 1 }] });
     if (path === '/api/product-editor/options' || path === '/api/fifo/options') return reply(options);
     if (path === '/api/product-editor/products/resolve' || /^\/api\/product-editor\/products\/\d+$/.test(path)) {
       const id = path.endsWith('/resolve') ? Number(parsed.searchParams.get('sku').split('-').at(-1)) : Number(path.split('/').at(-1));

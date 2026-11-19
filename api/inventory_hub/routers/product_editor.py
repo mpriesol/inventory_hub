@@ -56,12 +56,13 @@ async def products(q: Annotated[str, Query(max_length=200)] = "", brand: Annotat
     stock_scope: Literal["all", "confirmed", "unconfirmed", "in_stock"] = "all",
     activity: Literal["all", "active", "inactive"] = "all",
     supplier_link: Literal["all", "linked", "unlinked"] = "all",
+    availability_override: Literal["all", "manual", "automatic"] = "all",
     direction: Literal["asc", "desc"] = "asc", db: AsyncSession = Depends(get_session)):
     if page_size not in (25, 50, 100):
         raise HTTPException(422, detail={"code": "product_editor_invalid_request", "message": "product_editor_invalid_request"})
     return await _call(service.list_products(db, q=q, brand=brand, shop_code=shop_code, warehouse_code=warehouse_code,
         page=page, page_size=page_size, sort=sort, direction=direction, stock_scope=stock_scope,
-        activity=activity, supplier_link=supplier_link))
+        activity=activity, supplier_link=supplier_link, availability_override=availability_override))
 
 
 @router.post("/products")

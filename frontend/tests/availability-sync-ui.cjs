@@ -76,6 +76,7 @@ let capacityMode = 'ok', sampleErrorCode = 'stock_sync_untranslated_sample_error
 const capacityText = key => i18n.t(`availabilitySync.capacity.${key}`);
 const calls = [];
 global.fetch = async (path, init = {}) => {
+  if (String(path).startsWith('/api/settings/catalogs/availabilities')) return reply({ items: [] });
   const body = init.body ? JSON.parse(init.body) : undefined; calls.push({ path, ...init, body });
   assert.equal(init.cache, 'no-store'); assert(init.headers.Authorization.startsWith('Bearer synthetic-')); assert(!path.includes('synthetic-'));
   const url = new URL(path, dom.window.location.origin);

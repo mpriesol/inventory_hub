@@ -303,3 +303,63 @@ class AtomerAvailabilitySourceTests(unittest.TestCase):
         for code in ("1", "2"):
             with self.assertRaises(source.ExportError):
                 service.edited_rows(rows, [Override(code=code, visibility=True)])
+
+
+    def test_missing_or_stale_supplier_preserves_current_label_but_allows_explicit_choice(self):
+        _, catalog = source.parse_buyers(buyers({"AVAILABILITY": "do 3 dní"}))
+        for offer in ({}, {"fresh": False, "available": True, "label": "do 5 dní"},
+                      {"fresh": True, "available": None, "reason": "supplier_quantity_unknown"}):
+            state = projection(quantity="0")
+            state["offer"] = offer
+            row = source.assemble(catalog, {"RECEIPT-A": state})[0]
+            self.assertEqual((row["status"], row["proposed_availability"]), ("unchanged", "do 3 dní"))
+            self.assertEqual(row["warnings"], ["supplier_evidence_unknown"])
+            edited = service.edited_rows([row], [Override(code=row["code"], availability="overíme")])[0]
+            self.assertEqual(edited["status"], "changed")
+            self.assertEqual(edited["warnings"], [])
+
+    def test_generic_manual_override_can_set_false_and_preserves_unknown_quantity(self):
+        _, catalog = source.parse_buyers(buyers({}))
+        row = source.assemble(catalog, {"RECEIPT-A": projection(quantity=None,
+            availability_override={"label": "Na predobjednanie", "visible": False, "revision": 4})})[0]
+        self.assertIsNone(row["qty_available"])
+        self.assertFalse(row["proposed_visibility"])
+        self.assertEqual(row["proposed_availability"], "Na predobjednanie")
+        self.assertTrue(row["manual_override"])
+        unconfirmed = source.assemble(catalog, {"RECEIPT-A": projection(quantity=None,
+            availability_override={"revision": 4})})[0]
+        self.assertEqual(unconfirmed["status"], "blocked")
+        self.assertFalse(unconfirmed["manual_override"])
+
+    def test_excluding_export_does_not_hide_item_or_override_parent_manual_choice(self):
+        _, catalog = source.parse_buyers(buyers(
+            {"PRODUCT_ID": "FAMILY", "VISIBILITY": "0"},
+            {"PRODUCT_ID": "CHILD", "PARENT_ID": "FAMILY", "VISIBILITY": "0"}))
+        rows = source.assemble(catalog, {"CHILD": projection()})
+        rows = service.edited_rows(rows, [Override(code="FAMILY", visibility=False)])
+        rows = service.edited_rows(rows, [Override(code="CHILD", include_in_export=False)])
+        self.assertFalse(next(r for r in rows if r["code"] == "FAMILY")["proposed_visibility"])
+        self.assertTrue(next(r for r in rows if r["code"] == "CHILD")["proposed_visibility"])
+        output = list(csv.reader(io.StringIO(service.csv_bytes(rows).decode("utf-8-sig")), delimiter=";"))
+        self.assertEqual(len(output), 1)
+
+    def test_manual_business_values_do_not_turn_unconfirmed_stock_into_physical_stock(self):
+        _, catalog = source.parse_buyers(buyers({"AVAILABILITY": "do 5 dní"}))
+        rows = source.assemble(catalog, {"RECEIPT-A": projection(quantity=None)})
+        include_only = service.edited_rows(rows, [Override(code="RECEIPT-A", include_in_export=True)])
+        self.assertEqual(include_only[0]["status"], "blocked")
+        manual = service.edited_rows(rows, [Override(code="RECEIPT-A", availability="Na predobjednanie")])
+        self.assertEqual(manual[0]["status"], "changed")
+        self.assertIsNone(manual[0]["qty_available"])
+        self.assertEqual(manual[0]["warnings"], ["stock_unconfirmed_manual"])
+        self.assertEqual(manual[0]["reasons"], [])
+
+
+    def test_manual_reveal_cannot_bypass_missing_parent_state(self):
+        _, catalog = source.parse_buyers(buyers({"PRODUCT_ID": "CHILD", "PARENT_ID": "MISSING", "VISIBILITY": "0"}))
+        for quantity in ("0", None):
+            rows = source.assemble(catalog, {"CHILD": projection(quantity=quantity)})
+            with self.assertRaisesRegex(source.ExportError, "override_blocked"):
+                service.edited_rows(rows, [Override(code="CHILD", visibility=True)])
+            allowed = service.edited_rows(rows, [Override(code="CHILD", availability="do 5 dní")])
+            self.assertFalse(next(r for r in allowed if r["code"] == "CHILD")["proposed_visibility"])

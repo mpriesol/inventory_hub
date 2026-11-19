@@ -107,6 +107,7 @@ export function stockCardPending(key: string, productId: number, warehouse: stri
 
 export function stockCardAuditChanges(before: ProductEditorSnapshot, after: ProductEditorSnapshot): { field: string; before: unknown; after: unknown }[] {
   const flatten = (snapshot: ProductEditorSnapshot): Record<string, unknown> => ({
+    ...Object.fromEntries(Object.entries(snapshot.overrides?.availability || {}).filter(([key]) => ['label', 'visible', 'actor'].includes(key)).map(([key, value]) => [`availability.${key}`, value])),
     ...(snapshot.common || {}), ...(snapshot.variant || {}), ...(snapshot.warehouse || {}),
     ...Object.fromEntries(['sku', 'is_active', 'item_type', 'stock_unit', 'eans', 'attributes'].filter(key => key in snapshot).map(key => [key, snapshot[key as keyof ProductEditorSnapshot]])),
     ...Object.fromEntries((snapshot.shops || []).flatMap(shop => Object.entries(shop.overrides || {}).map(([key, value]) => [`${shop.shop_code}.${key}`, value]))),

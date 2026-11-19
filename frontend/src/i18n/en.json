@@ -51,14 +51,14 @@
     },
     "sourceDate": "Source fetched: {{date}}",
     "notYet": "not yet",
-    "editHelp": "You can edit visibility and availability before creating the CSV. Changes apply only to this export.",
+    "editHelp": "Edits are saved in the preview. Choose which items to include in the CSV; shop visibility is a separate setting.",
     "dailyExportHelp": "The daily export is creating its CSV automatically. The result will appear when it finishes.",
     "blockedHelp": "Items with unresolved identities or missing data will not be exported.",
     "missingProducts": "Received products missing from the Atomer source",
     "exportUncertain": "The CSV creation outcome has not been confirmed. Your edits are saved; check the result first.",
     "product": "Product / variant",
     "availableQty": "Available units",
-    "visibility": "CSV visibility",
+    "visibility": "Visible in shop",
     "availability": "CSV availability",
     "result": "Status",
     "current": "Currently in Atomer",
@@ -77,9 +77,9 @@
     "exportReady": "The CSV is ready to download.",
     "download": "Download CSV",
     "manualImport": "Upload the CSV to Atomer manually. Creating or downloading the file does not confirm an import.",
-    "history": "Previews and downloads",
+    "history": "CSV and preview history",
     "retention": "Older CSV files are retained for 7 days. The latest successful file remains available until a newer one exists.",
-    "changedCount": "Changed items: {{count}}",
+    "changedCount": "Exported items: {{count}}",
     "open": "Open",
     "noHistory": "No export has been prepared yet.",
     "requestFailed": "The request could not be completed. Refresh the status and try again.",
@@ -102,7 +102,8 @@
       "total": "Items",
       "changed": "Proposed changes",
       "blocked": "Blocked",
-      "unmatched": "Unmatched"
+      "unmatched": "Unmatched",
+      "exportable": "Included CSV changes"
     },
     "coverage": {
       "buyers_only": "The buyers feed does not establish full coverage of hidden products. Missing parents: {{parents}}. Add a complete administrative export to process them safely.",
@@ -153,8 +154,75 @@
       "atomer_availability_run_not_found": "The stored preview was not found.",
       "atomer_availability_download_failed": "The CSV could not be downloaded.",
       "hub_access_required": "Sign in to the Hub.",
-      "admin_required": "An administrator account is required for this change."
-    }
+      "admin_required": "An administrator account is required for this change.",
+      "supplier_evidence_unknown": "Supplier availability is not verified. Current availability is preserved; you can choose a value manually.",
+      "stock_unconfirmed_manual": "Availability was chosen manually. Own quantity remains unverified; no stock movement was created.",
+      "atomer_availability_edit_missing": "This edit was not saved. You can retry the same request.",
+      "atomer_availability_persistent_conflict": "Selected rows for one stock card have conflicting persistent settings. Align them before exporting.",
+      "atomer_availability_parent_excluded": "The variant also needs a parent change, but the parent was excluded. Include the corresponding parent.",
+      "availability_value_missing": "This availability is not in the active dictionary. Add it in settings or choose another value.",
+      "catalog_changed": "The dictionary changed. Refresh the current values.",
+      "catalog_request_reused": "This request was already used with different data. Recover its saved result."
+    },
+    "sections": "Synchronization sections",
+    "editablePreview": "Editable preview",
+    "csvDetail": "Generated CSV details",
+    "immutableHistory": "This CSV has already been generated and cannot be edited. Load the source and create a new preview to make changes.",
+    "historicWarnings": "These warnings describe the source when this historical file was created. Resolved issues are checked in a new preview.",
+    "snapshotWarnings": "Warnings belong to this source snapshot. Create a new preview after correcting the source.",
+    "editSaved": "Preview edits saved.",
+    "editUncertain": "The edit has not been confirmed. Check its saved result before making another change.",
+    "retryEdit": "Retry the confirmed unsaved edit",
+    "previousDraft": "This browser has edits from an earlier preview version. Export them or discard them to continue editing.",
+    "search": "Search name, code, SKU or EAN",
+    "searchAction": "Search",
+    "sortBy": "Sort by",
+    "sortDirection": "Sort direction",
+    "ascending": "Ascending",
+    "descending": "Descending",
+    "filters": "More filters",
+    "rowKind": "Item type",
+    "anyValue": "Any value",
+    "yes": "Yes",
+    "no": "No",
+    "kinds": {
+      "all": "All items",
+      "parent": "Parent products",
+      "variant": "Variants",
+      "standalone": "Standalone products"
+    },
+    "sorts": {
+      "code": "Atomer code",
+      "name": "Name",
+      "sku": "Hub SKU",
+      "ean": "EAN",
+      "qty_available": "Available quantity",
+      "current_visibility": "Current visibility",
+      "proposed_visibility": "Proposed visibility",
+      "current_availability": "Current availability",
+      "proposed_availability": "Proposed availability",
+      "status": "Comparison result",
+      "include_in_export": "Export inclusion",
+      "manual_override": "Manual changes"
+    },
+    "resetFilters": "Clear filters",
+    "selectedCount": "Selected items: {{count}}",
+    "selectAllFiltered": "Select all filtered items ({{count}})",
+    "clearSelection": "Clear selection",
+    "allPagesSelected": "Selection includes every page of the filtered list. You can exclude individual items.",
+    "selectPage": "Select items on this page",
+    "selectFor": "Select {{code}}",
+    "includeExport": "Include in export",
+    "excludeExport": "Exclude from export",
+    "includeFor": "Include {{code}} in export",
+    "leaveUnchanged": "Leave unchanged",
+    "applySelected": "Apply to selected ({{count}})",
+    "applyEveryExport": "Apply to every export",
+    "persistenceHelp": "When creating the CSV, flagged manual availability and visibility settings of included products/variants are also saved to their stock cards for future exports. Parent context applies only to this CSV. Remove existing manual overrides on the stock card.",
+    "manualOverride": "Manual stock-card override",
+    "manualChanges": "Manual changes",
+    "manageAvailabilities": "Manage availability dictionary",
+    "supplierUncertain": "Supplier evidence is inconclusive; check the stock card."
   },
   "common": {
     "save": "Save",
@@ -512,7 +580,11 @@
         "receiving_product_preparation_required": "Prepare the missing stock card.",
         "receiving_product_identity_conflict": "Product identifiers conflict. Review the stock card.",
         "receiving_missing_unit_price": "The verified invoice purchase cost is missing.",
-        "mixed_receiving_legacy_pending": "This invoice has unposted scans from previous receiving. Complete or reset the original receipt first."
+        "mixed_receiving_legacy_pending": "This invoice has unposted scans from previous receiving. Complete or reset the original receipt first.",
+        "receiving_identity_conflict": "The product identity is ambiguous. Check the stock card and EAN.",
+        "stock_item_required": "Only stock items can be received.",
+        "mixed_receiving_not_empty": "This receipt contains items. Only an empty receipt can be removed.",
+        "mixed_receiving_archived": "This receipt is archived."
       },
       "shopStatus": {
         "unlinked": "product or variant is not linked",
@@ -537,7 +609,36 @@
         "m": "m"
       },
       "warningReview": "Product information needs review.",
-      "openOriginal": "Open original receipt {{invoice}}"
+      "openOriginal": "Open original receipt {{invoice}}",
+      "history": "Receipt history",
+      "historyTitle": "Invoices and invoice receipts",
+      "historyEmpty": "There are no completed receipts yet.",
+      "invoiceOverview": "Invoice overview",
+      "backToReceipt": "Back to receiving",
+      "warehouse": "Destination warehouse",
+      "chooseWarehouse": "Select a warehouse",
+      "warehousesFailed": "Could not load warehouses. Reload the page.",
+      "removeEmptyBatch": "Remove empty receipt",
+      "removedBatch": "The empty receipt was removed from the list.",
+      "emptyArchiveReason": "Manually removed an empty receipt draft.",
+      "withoutInvoice": "Without invoice",
+      "receiveWithoutInvoice": "Receive without an invoice",
+      "manualHelp": "If the invoice is missing, you can explicitly continue without it. Stock changes only when the whole receipt is confirmed.",
+      "manualWarning": "This receipt will not be linked to an invoice. Do not receive the same delivery again when its invoice arrives.",
+      "manualQuantity": "Quantity ({{unit}})",
+      "manualReason": "Reason for receiving without an invoice",
+      "manualCostState": "Purchase cost",
+      "manualCost": "Cost per stock unit excluding VAT (EUR)",
+      "manualCostHelp": "You can later update an unknown or provisional purchase cost through FIFO cost correction on the stock card.",
+      "confirmManual": "Add to receipt without an invoice",
+      "archivedReceipt": "Archived receipt",
+      "archivedHelp": "This receipt was removed from the active list. Archiving does not change stock movements or invoices.",
+      "recoveryStorageRequired": "The browser could not save operation recovery data. Allow storage for this site and try again.",
+      "costStates": {
+        "unknown": "Unknown cost",
+        "known": "Confirmed cost",
+        "provisional": "Provisional cost"
+      }
     },
     "camera": {
       "title": "Camera scanner",
@@ -5292,7 +5393,10 @@
     "paymentDirectionHelp": "A payment increases the recorded paid balance; a refund decreases it. An incorrect entry can be reversed in payment history.",
     "dashboardScopeWithArchived": "Including archived documents for this direction: {{count}}. Table filters do not change this overview.",
     "operationStorageUnavailable": "The browser cannot safely retain this pending operation. Nothing was sent. Allow storage for this page and try again.",
-    "operationActorChanged": "The signed-in user has changed. The original operation must be completed by the same user."
+    "operationActorChanged": "The signed-in user has changed. The original operation must be completed by the same user.",
+    "errors": {
+      "invoice_number_required_for_receiving": "Enter the invoice number from the original document. It could not be verified from the file; the invoice has not been saved yet."
+    }
   },
   "invoiceCalendar": {
     "title": "Due date calendar",
@@ -6141,6 +6245,23 @@
       "attention_write_failed": "Could not confirm the change. Refresh before trying again.",
       "attention_changed": "The state changed. Refresh and select the action again.",
       "attention_not_found": "The notification is no longer available."
+    }
+  },
+  "invoiceUpload": {
+    "help": "We save the original invoice, process it with the available parser and prepare it for receiving. Uploading an invoice does not change stock.",
+    "metadata": "Add invoice details",
+    "processing": "Saving and processing the invoice…",
+    "continue": "Close and continue",
+    "analyze": "Investigate in operation logs (new tab)",
+    "lineCount": "Parsed lines: {{parsed}}. Stored lines: {{stored}}.",
+    "ready": "Invoice lines are ready for receiving.",
+    "notReady": "The invoice is not ready for receiving yet. Review the listed issues.",
+    "missingFields": "Missing data: {{fields}}",
+    "refreshFailed": "The invoice is saved, but the overview could not refresh. Refresh it after closing this dialog.",
+    "results": {
+      "complete": "The invoice was saved and processed.",
+      "partial": "The original was saved; processing needs review.",
+      "saved": "The invoice was saved. Processing is not confirmed."
     }
   }
 }

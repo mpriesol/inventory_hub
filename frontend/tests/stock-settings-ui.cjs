@@ -65,6 +65,7 @@ const calls = [];
 let optionsMode = 'valid', warehouseMode = 'valid', warehouseSaveMode = 'valid', shopSaveMode = 'valid';
 let resolveOptions, resolveWarehouse, rejectWarehouseSave, rejectShopSave;
 global.fetch = async (path, init = {}) => {
+  if (path === '/api/settings/catalogs/warehouses?include_inactive=true') return reply({ items: [] });
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, ...init, body });
   assert(path.startsWith('/api/stock-settings/'), 'This page only accesses its protected settings API');

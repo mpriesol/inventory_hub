@@ -126,7 +126,7 @@ function UploadDialog({ initialSupplier = '', context, onClose, onUploaded }: Om
         </section>
         <div className="upload-selected"><span className="muted small">{t('invoiceArchive.file')}</span><strong data-testid="invoice-selected-file">{file?.name || t('invoiceArchive.noFile')}</strong></div>
         <details ref={metadata} data-testid="invoice-upload-metadata"><summary>{t('invoiceUpload.metadata')}</summary><div className="fields">
-          {(['invoice_number', 'invoice_date', 'due_date'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.endsWith('date') ? 'date' : 'text'} data-testid={`upload-${key.replaceAll('_', '-')}`} value={upload[key]} onChange={event => { setError(''); setUpload({ ...upload, [key]: event.target.value }); }} /></label>)}
+          {(['invoice_number', 'invoice_date', 'due_date'] as const).map(key => <label key={key}>{t(`invoiceArchive.${key}`)}<input type={key.endsWith('date') ? 'date' : 'text'} data-testid={`upload-${key.replace(/_/g, '-')}`} value={upload[key]} onChange={event => { setError(''); setUpload({ ...upload, [key]: event.target.value }); }} /></label>)}
           <label className="check"><input type="checkbox" checked={upload.vat_included} onChange={event => { setError(''); setUpload({ ...upload, vat_included: event.target.checked }); }} />{t('invoiceArchive.vatIncluded')}</label>
         </div></details>
         <footer><button type="button" onClick={dismiss}>{t(result ? 'invoiceUpload.continue' : 'common.cancel')}</button><button className="primary" disabled={!file || !upload.supplier_code} data-testid="invoice-upload-save">{t(working ? 'invoiceUpload.processing' : 'invoiceArchive.addInvoice')}</button></footer>

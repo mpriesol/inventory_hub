@@ -8,13 +8,16 @@ export interface ReceivingBatchCandidate {
     received_qty: string; remaining_qty: string; unit_price: string | null }[];
 }
 export interface ReceivingBatchScan {
-  id: string; code: string; qty: string; supplier: string; supplier_name: string;
-  invoice_no: string; invoice_date: string | null; session_id: number | string; line_id: number;
+  id: string; code: string; qty: string; supplier: string | null; supplier_name: string | null;
+  invoice_no: string | null; invoice_date: string | null; session_id: number | string | null; line_id: number | null;
+  source_kind?: 'invoice' | 'manual'; manual_reason?: string; cost_status?: 'known' | 'provisional' | 'unknown';
   line_number: number | null; title: string; product_id: number | null; sku: string | null;
   unit_price: string | null; status: 'active' | 'cancelled'; alternatives: ReceivingBatchCandidate[];
 }
 export interface ReceivingBatchItem {
-  session_id: number | string; supplier: string; invoice_no: string; line_id: number;
+  scan_id?: string;
+  session_id: number | string | null; supplier: string | null; invoice_no: string | null; line_id: number | null;
+  source_kind?: 'invoice' | 'manual'; manual_reason?: string; cost_status?: 'known' | 'provisional' | 'unknown';
   title: string; qty: string; product_id: number | null; sku: string | null;
   card_status: string; can_prepare: boolean; draft_id: string | null; warnings: string[];
   stock_qty_before?: string | null; stock_qty_after?: string | null; stock_quantity?: string;
@@ -24,7 +27,7 @@ export interface ReceivingBatchItem {
   shops: { code: string; name: string; linked: boolean; sync_enabled: boolean; status: string; blockers?: string[] }[];
 }
 export interface ReceivingBatchSummary {
-  id: string; status: 'open' | 'completed'; warehouse_code: string; warehouse_name: string;
+  id: string; status: 'open' | 'completed'; archived?: boolean; warehouse_code: string; warehouse_name: string;
   created_at: string; completed_at: string | null; scans: ReceivingBatchScan[]; items: ReceivingBatchItem[];
   invoices: { supplier: string; invoice_no: string; session_id: number | string; invoice_date: string | null;
     ordered_qty: string; received_qty: string; scanned_qty: string; unposted_legacy_qty?: string; complete_after: boolean }[];
@@ -51,8 +54,9 @@ const validSummary = (value: unknown): value is ReceivingBatchSummary => {
     && Array.isArray(row.scans) && Array.isArray(row.items) && Array.isArray(row.invoices)
     && Array.isArray(row.blockers) && decimal(row.total_qty)
     && row.scans.every(scan => record(scan) && typeof scan.id === 'string' && typeof scan.code === 'string'
-      && decimal(scan.qty) && typeof scan.title === 'string' && typeof scan.supplier === 'string'
-      && typeof scan.invoice_no === 'string' && ['active', 'cancelled'].includes(scan.status) && Array.isArray(scan.alternatives))
+      && decimal(scan.qty) && typeof scan.title === 'string'
+      && (typeof scan.supplier === 'string' || scan.source_kind === 'manual' && scan.supplier === null)
+      && (typeof scan.invoice_no === 'string' || scan.source_kind === 'manual' && scan.invoice_no === null) && ['active', 'cancelled'].includes(scan.status) && Array.isArray(scan.alternatives))
     && row.items.every(item => record(item) && typeof item.title === 'string' && decimal(item.qty)
       && Array.isArray(item.warnings) && Array.isArray(item.shops)
       && item.shops.every(shop => record(shop) && typeof shop.code === 'string' && typeof shop.linked === 'boolean' && typeof shop.status === 'string'))
@@ -66,7 +70,7 @@ function summaryResult(value: unknown, id?: string): ReceivingBatchSummary {
 export async function createReceivingBatch(request_id: string, warehouse_code?: string) {
   return summaryResult(await post<unknown>(base, { request_id, ...(warehouse_code ? { warehouse_code } : {}) }));
 }
-export const listReceivingBatches = () => fetchJSON<{ batches: ReceivingBatchListItem[] }>(`${base}?status=open`);
+export const listReceivingBatches = (status: 'open' | 'completed' = 'open') => fetchJSON<{ batches: ReceivingBatchListItem[] }>(`${base}?status=${status}`);
 export async function getReceivingBatch(id: string) { return summaryResult(await fetchJSON<unknown>(path(id)), id); }
 export async function previewReceivingBatch(id: string) {
   const value = summaryResult(await post<unknown>(`${path(id)}/preview`, {}), id);
@@ -92,4 +96,20 @@ export async function finalizeReceivingBatch(id: string, command: ReceivingBatch
   const value = await post<ReceivingBatchFinalizeResult>(`${path(id)}/finalize`, command);
   if (value?.request_id !== command.request_id || value.batch_id !== id || value.status !== 'completed' || value.summary?.status !== 'completed') throw new Error('receiving_batch_response_invalid');
   summaryResult(value.summary, id); return value;
+}
+
+export interface ReceivingBatchArchiveCommand { request_id: string; reason: string; empty_only: true }
+export async function archiveReceivingBatch(id: string, command: ReceivingBatchArchiveCommand) {
+  const value = await post<{ request_id: string; batch_id: string; archived: boolean; replayed: boolean }>(`${path(id)}/archive`, command);
+  if (value?.request_id !== command.request_id || value.batch_id !== id || value.archived !== true || typeof value.replayed !== 'boolean') throw new Error('receiving_batch_response_invalid');
+  return value;
+}
+export interface ReceivingManualProduct { product_id: number; sku: string; title: string; stock_unit: string }
+export const getReceivingManualProduct = (id: string, code: string) => fetchJSON<ReceivingManualProduct>(`${path(id)}/manual-product?${new URLSearchParams({ code })}`);
+export interface ReceivingManualScanCommand {
+  request_id: string; code: string; qty: string; confirmed_without_invoice: true; reason: string;
+  unit_cost: string | null; cost_status: 'known' | 'provisional' | 'unknown';
+}
+export async function manualReceivingBatchScan(id: string, command: ReceivingManualScanCommand) {
+  return scanResult(await post<ReceivingBatchScanResult>(`${path(id)}/manual-scan`, command), id, command.request_id, command.request_id);
 }

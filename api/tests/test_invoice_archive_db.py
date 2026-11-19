@@ -10,16 +10,26 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 from zipfile import ZipFile
+from uuid import uuid4
 
+import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from fastapi import UploadFile
+from fastapi import FastAPI, UploadFile
+from httpx import ASGITransport, AsyncClient
 
 from invoice_db_fixture import DATABASE_REQUIRED, TEST_URL, InvoiceDatabaseCase
+from inventory_hub.access import operator_access
+from inventory_hub.adapters import sk_profi_bike_invoice as skp
+from inventory_hub.database import get_session
 from inventory_hub.invoice_archive_types import InvoiceReconcileInput
+from inventory_hub.invoice_processing_types import InvoiceProcessingApply, InvoiceProcessingPreview
 from inventory_hub.routers import invoices_unified as routes
+from inventory_hub.routers import receiving_db, suppliers
 from inventory_hub.services import invoice_archive as archive
 from inventory_hub.services import invoice_export
+from inventory_hub.services import invoice_processing, receiving_source
+from test_sk_profi_bike_invoice import invoice_text
 
 
 @unittest.skipUnless(TEST_URL, DATABASE_REQUIRED)
@@ -505,4 +515,276 @@ class InvoiceArchiveDatabaseTests(InvoiceDatabaseCase):
                 self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), expected)
         self.assertEqual(worker.status(), {'items': []})
         self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 205)
+        await self.assert_no_inventory_effects()
+
+
+@unittest.skipUnless(TEST_URL, DATABASE_REQUIRED)
+class InvoiceUploadDatabaseTests(InvoiceDatabaseCase):
+    """Both HTTP entry points share durable evidence and verified receiving files."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.content = b'%PDF-1.7\nSynthetic supplier invoice\n%%EOF'
+        self.invoice = skp.parse_invoice_text(invoice_text())
+        self.parser = self.enterContext(patch.object(skp, 'parse_invoice_pdf', return_value=self.invoice))
+        async with self.sessions() as db:
+            await db.execute(text("UPDATE suppliers SET code='sk-profi-bike' WHERE id=:id"), {'id': self.supplier_id})
+            await db.execute(text("UPDATE suppliers SET code='northfinder' WHERE id=:id"), {'id': self.other_supplier_id})
+            await db.commit()
+        for code in ('sk-profi-bike', 'northfinder'):
+            config = self.data_root / 'suppliers' / code / 'config.json'
+            config.parent.mkdir(parents=True)
+            config.write_text(json.dumps({'code': code, 'name': 'Synthetic supplier'}))
+        app = FastAPI()
+        app.include_router(routes.router)
+        app.include_router(suppliers.router)
+        async def session():
+            async with self.sessions() as db:
+                yield db
+        app.dependency_overrides[get_session] = session
+        app.dependency_overrides[operator_access] = lambda: 'synthetic-operator'
+        self.client = AsyncClient(transport=ASGITransport(app=app), base_url='http://invoice-fixture')
+        self.addAsyncCleanup(self.client.aclose)
+
+    async def upload(self, *, legacy=False, supplier='sk-profi-bike', filename='original.pdf', content=None, **fields):
+        files = {'file': (filename, self.content if content is None else content)}
+        if legacy:
+            return await self.client.post(f'/suppliers/{supplier}/upload-invoice', files=files, params=fields)
+        return await self.client.post('/invoices/upload', files=files, data={'supplier_code': supplier, **fields})
+
+    def index_path(self, supplier='sk-profi-bike'):
+        return self.data_root / 'suppliers' / supplier / 'invoices/index.latest.json'
+
+    async def assert_original(self, identifier, content):
+        originals = await self.rows("SELECT * FROM invoice_files WHERE invoice_id=:id AND role='original'", {'id': identifier})
+        self.assertEqual(len(originals), 1)
+        self.assertEqual(originals[0]['sha256'], hashlib.sha256(content).hexdigest())
+        self.assertEqual(Path(originals[0]['file_path']).read_bytes(), content)
+
+    def spreadsheet(self):
+        data = BytesIO()
+        pd.DataFrame([{'Kód': '001', 'Názov': 'Synthetic Northfinder bonus', 'Množstvo': 2,
+            'Jednotková cena v EUR': 0, 'Spolu v EUR': 0, 'Spolu v EUR s DPH': 0,
+            'EAN': '0012345678905'}]).to_excel(data, index=False)
+        return data.getvalue()
+
+    async def test_canonical_then_legacy_reuses_original_identity_and_verified_receiving_csv(self):
+        first = await self.upload()
+        self.assertEqual(first.status_code, 200, first.text)
+        saved = first.json()
+        self.assertEqual(saved['archive'], {'status': 'completed', 'id': saved['id']})
+        self.assertEqual(saved['processing']['status'], 'complete')
+        self.assertTrue(saved['processing']['receiving_ready'])
+        index_path = self.index_path()
+        index = json.loads(index_path.read_text())
+        entry = index['sk-profi-bike:9_26_00999']
+        entry.update(status='processed', note='Preserve receiving note', current_session_id='123')
+        index_path.write_text(json.dumps(index))
+        before = index_path.read_bytes()
+        replay = await self.upload(legacy=True, filename='renamed-original.pdf')
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual((replay.json()['id'], replay.json()['csv_path']), (saved['id'], saved['csv_path']))
+        self.assertTrue(replay.json()['replayed'])
+        self.assertEqual(index_path.read_bytes(), before)
+        csv_path = self.data_root / saved['csv_path']
+        self.assertEqual(csv_path.read_bytes(), self.invoice.csv_bytes())
+        verified = receiving_source.load_source(self.data_root, 'sk-profi-bike', self.invoice.number,
+            csv_path, receiving_db._parse_invoice_csv)
+        self.assertEqual(len(verified.rows), 3)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 1)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 3)
+        self.assertFalse(await self.scalar('SELECT vat_included FROM uploaded_invoices'))
+        await self.assert_original(saved['id'], self.content)
+        await self.assert_no_inventory_effects()
+
+    async def test_concurrent_entry_points_share_one_original_document_and_index(self):
+        responses = await asyncio.gather(self.upload(), self.upload(legacy=True, filename='copy.pdf'))
+        for response in responses:
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()['processing']['receiving_ready'])
+        self.assertEqual(responses[0].json()['id'], responses[1].json()['id'])
+        self.assertEqual(sorted(item.json()['replayed'] for item in responses), [False, True])
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 1)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 3)
+        self.assertEqual(len(json.loads(self.index_path().read_text())), 1)
+        await self.assert_original(responses[0].json()['id'], self.content)
+        await self.assert_no_inventory_effects()
+
+    async def test_malformed_pdf_retains_original_without_lines_index_or_stock_and_replays(self):
+        self.parser.side_effect = skp.InvoiceParseError('Synthetic parser failure')
+        first, replay = await self.upload(), await self.upload(legacy=True, filename='renamed.pdf')
+        for response in (first, replay):
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['processing']['issues'], ['invoice_parse_failed'])
+            self.assertFalse(response.json()['processing']['receiving_ready'])
+            self.assertEqual(response.json()['processing']['stored_lines'], 0)
+        self.assertEqual(first.json()['id'], replay.json()['id'])
+        self.assertTrue(replay.json()['replayed'])
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 0)
+        self.assertIsNone(await self.scalar('SELECT total_with_vat FROM uploaded_invoices'))
+        self.assertFalse(self.index_path().exists())
+        await self.assert_original(first.json()['id'], self.content)
+        await self.assert_no_inventory_effects()
+
+    async def test_unverified_csv_and_foreign_spreadsheet_retain_original_without_receiving(self):
+        for filename, content, issue, lines in (
+            ('invoice.csv', b'SCM;QTY;PRICE\nA;2;12.34\n', 'receiving_source_unverified', 1),
+            ('invoice.xlsx', self.spreadsheet(), 'invoice_parser_unavailable', 0),
+        ):
+            response = await self.upload(filename=filename, content=content)
+            self.assertEqual(response.status_code, 200, response.text)
+            result = response.json()
+            self.assertEqual(result['processing']['issues'], [issue])
+            self.assertEqual(result['processing']['stored_lines'], lines)
+            self.assertFalse(result['processing']['receiving_ready'])
+            await self.assert_original(result['id'], content)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 2)
+        self.assertFalse(self.index_path().exists())
+        await self.assert_no_inventory_effects()
+
+    async def test_changed_facts_or_original_cannot_replace_existing_evidence(self):
+        first = await self.upload()
+        self.assertEqual(first.status_code, 200, first.text)
+        index_before = self.index_path().read_bytes()
+        csv_path = self.data_root / first.json()['csv_path']
+        csv_before = csv_path.read_bytes()
+        self.parser.return_value = skp.parse_invoice_text(invoice_text().replace('Test product alpha', 'Changed product'))
+        changed_facts = await self.upload(legacy=True)
+        self.assertEqual(changed_facts.status_code, 409, changed_facts.text)
+        self.assertEqual(changed_facts.json()['detail']['code'], 'invoice_source_changed')
+        self.parser.return_value = self.invoice
+        changed_original = await self.upload(content=self.content + b'\nChanged original')
+        self.assertEqual(changed_original.status_code, 409, changed_original.text)
+        self.assertEqual(self.index_path().read_bytes(), index_before)
+        self.assertEqual(csv_path.read_bytes(), csv_before)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 1)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 3)
+        await self.assert_original(first.json()['id'], self.content)
+        await self.assert_no_inventory_effects()
+
+    async def test_receiving_preparation_conflict_still_commits_original_and_parsed_facts(self):
+        raw = self.index_path().parent / 'pdf' / (self.invoice.key + '.pdf')
+        raw.parent.mkdir(parents=True)
+        previous = self.content + b'\nOther interrupted source'
+        raw.write_bytes(previous)
+        prior = skp.parse_invoice_text(invoice_text().replace('DEMO-A', 'OTHER-SOURCE'))
+        self.parser.side_effect = lambda value: self.invoice if value == self.content else prior
+        response = await self.upload()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['processing']['issues'], ['invoice_receiving_preparation_conflict'])
+        self.assertFalse(response.json()['processing']['receiving_ready'])
+        self.assertEqual(response.json()['processing']['stored_lines'], 3)
+        self.assertEqual(raw.read_bytes(), previous)
+        self.assertFalse(self.index_path().exists())
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 3)
+        await self.assert_original(response.json()['id'], self.content)
+        await self.assert_no_inventory_effects()
+
+    async def test_northfinder_xlsx_keeps_zero_cost_leading_zero_identity_and_verified_source(self):
+        content = self.spreadsheet()
+        response = await self.upload(supplier='northfinder', filename='Northfinder-1234567.xlsx', content=content)
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertTrue(result['processing']['receiving_ready'])
+        self.assertEqual(result['invoice_number'], '1234567')
+        self.assertIn('invoice_date', result['processing']['missing_fields'])
+        line = (await self.rows('SELECT supplier_sku,ean,quantity,unit_price FROM uploaded_invoice_lines'))[0]
+        self.assertEqual(dict(line), {'supplier_sku': '001', 'ean': '0012345678905', 'quantity': D(2), 'unit_price': D(0)})
+        csv_path = self.data_root / result['csv_path']
+        verified = receiving_source.load_source(self.data_root, 'northfinder', '1234567', csv_path, receiving_db._parse_invoice_csv)
+        self.assertEqual((verified.adapter, verified.rows[0]['unit_price']), ('northfinder_xlsx', D(0)))
+        self.assertFalse(await self.scalar('SELECT vat_included FROM uploaded_invoices'))
+        self.assertIsNone(await self.scalar('SELECT total_with_vat FROM uploaded_invoices'))
+        await self.assert_original(result['id'], content)
+        csv_path.write_bytes(csv_path.read_bytes().replace(b';2;', b';3;'))
+        with self.assertRaises(receiving_source.ReceivingSourceError):
+            receiving_source.load_source(self.data_root, 'northfinder', '1234567', csv_path, receiving_db._parse_invoice_csv)
+        await self.assert_no_inventory_effects()
+
+    async def test_northfinder_missing_number_is_rejected_before_archive_then_operator_can_retry(self):
+        content = self.spreadsheet()
+        for legacy in (False, True):
+            response = await self.upload(legacy=legacy, supplier='northfinder', filename='original.xlsx', content=content)
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(response.json()['detail']['code'], 'invoice_number_required_for_receiving')
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 0)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM invoice_files'), 0)
+        self.assertFalse(self.index_path('northfinder').exists())
+        first = await self.upload(supplier='northfinder', filename='original.xlsx', content=content, invoice_number='NF-001')
+        replay = await self.upload(legacy=True, supplier='northfinder', filename='renamed.xlsx', content=content, invoice_number='NF-001')
+        self.assertEqual((first.status_code, replay.status_code), (200, 200), (first.text, replay.text))
+        self.assertEqual(first.json()['id'], replay.json()['id'])
+        self.assertTrue(replay.json()['processing']['receiving_ready'])
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 1)
+        await self.assert_original(first.json()['id'], content)
+        await self.assert_no_inventory_effects()
+
+    async def test_upload_reconcile_then_reupload_preserves_pdf_and_xlsx_identity_lines_and_notes(self):
+        for supplier, filename, content, expected_lines in (
+            ('sk-profi-bike', 'original.pdf', self.content, 3),
+            ('northfinder', 'Northfinder-1234567.xlsx', self.spreadsheet(), 1),
+        ):
+            first = await self.upload(supplier=supplier, filename=filename, content=content)
+            self.assertEqual(first.status_code, 200, first.text)
+            identifier = first.json()['id']
+            async with self.sessions() as db:
+                await db.execute(text('UPDATE uploaded_invoices SET notes=:note WHERE id=:id'),
+                    {'id': identifier, 'note': 'Keep verified operator note'})
+                await db.commit()
+            before_lines = await self.rows('SELECT * FROM uploaded_invoice_lines WHERE invoice_id=:id', {'id': identifier})
+            for _ in range(2):
+                async with self.sessions() as db:
+                    report = await archive.reconcile_supplier(db, InvoiceReconcileInput(supplier_code=supplier))
+                    await db.commit()
+                self.assertEqual(report['conflicts'], [])
+                self.assertEqual((report['created'], report['existing']), (0, 1))
+            replay = await self.upload(legacy=True, supplier=supplier, filename=filename, content=content)
+            self.assertEqual(replay.status_code, 200, replay.text)
+            self.assertEqual(replay.json()['id'], identifier)
+            self.assertTrue(replay.json()['replayed'])
+            self.assertEqual(replay.json()['processing']['stored_lines'], expected_lines)
+            self.assertEqual(await self.scalar('SELECT notes FROM uploaded_invoices WHERE id=:id', {'id': identifier}),
+                'Keep verified operator note')
+            self.assertEqual(await self.rows('SELECT * FROM uploaded_invoice_lines WHERE invoice_id=:id', {'id': identifier}), before_lines)
+            await self.assert_original(identifier, content)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 2)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoice_lines'), 4)
+        await self.assert_no_inventory_effects()
+
+    async def test_retired_source_rejects_both_entry_points_before_creating_archive_or_index(self):
+        async with self.sessions() as db:
+            await db.execute(text('''INSERT INTO invoice_source_archive_events
+                (id,supplier_id,source_key,action,note,actor,request_hash)
+                VALUES(:id,:supplier,:key,'archive','Retire synthetic malformed source','fixture',:hash)'''),
+                {'id': uuid4(), 'supplier': self.supplier_id, 'key': self.invoice.number, 'hash': 'a' * 64})
+            await db.commit()
+        for legacy in (False, True):
+            response = await self.upload(legacy=legacy)
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(response.json()['detail']['code'], 'invoice_source_archived')
+        self.assertEqual(await self.scalar('SELECT count(*) FROM uploaded_invoices'), 0)
+        self.assertEqual(await self.scalar('SELECT count(*) FROM invoice_files'), 0)
+        self.assertFalse(self.index_path().exists())
+        await self.assert_no_inventory_effects()
+
+    async def test_archived_invoice_replay_retains_original_and_cannot_prepare_receiving(self):
+        first = await self.upload()
+        self.assertEqual(first.status_code, 200, first.text)
+        identifier = first.json()['id']
+        request = InvoiceProcessingPreview(action='archive', expected_revision=0, note='Retire synthetic invoice')
+        async with self.sessions() as db:
+            preview = await invoice_processing.preview(db, identifier, request)
+            await invoice_processing.apply(db, identifier, InvoiceProcessingApply(**request.model_dump(),
+                request_id=uuid4(), preview_hash=preview['preview_hash'], confirmed=True), actor='fixture')
+            await db.commit()
+        before = self.index_path().read_bytes()
+        replay = await self.upload(legacy=True)
+        self.assertEqual(replay.status_code, 200, replay.text)
+        self.assertEqual(replay.json()['id'], identifier)
+        self.assertTrue(replay.json()['replayed'])
+        self.assertEqual(replay.json()['processing']['issues'], ['invoice_not_available_for_receiving'])
+        self.assertFalse(replay.json()['processing']['receiving_ready'])
+        self.assertEqual(self.index_path().read_bytes(), before)
+        self.assertIsNotNone(await self.scalar('SELECT archived_at FROM uploaded_invoices'))
+        await self.assert_original(identifier, self.content)
         await self.assert_no_inventory_effects()

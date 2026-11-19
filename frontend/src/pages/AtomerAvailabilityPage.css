@@ -41,3 +41,15 @@
 .atomer-download:last-child { border-bottom: 0; }
 .atomer-download small { display: block; }
 @media (max-width: 640px) { .atomer-availability { padding: .75rem; gap: .8rem; } .atomer-panel { padding: .75rem; } .atomer-heading { align-items: flex-start; } .atomer-actions { gap: .5rem; } .atomer-counts { gap: 1rem; } .atomer-download { flex-wrap: wrap; } }
+.atomer-tabs { display: flex; flex-wrap: wrap; gap: .5rem; }
+.atomer-panel[hidden] { display: none; }
+.atomer-search { flex: 1; min-width: 220px; }
+.atomer-filters { margin-bottom: 1rem; }
+.atomer-filters summary { cursor: pointer; font-weight: 550; }
+.atomer-bulk { border: 1px solid var(--color-border-subtle); border-radius: .5rem; padding: .8rem; margin-bottom: 1rem; background: var(--color-bg-primary); }
+.atomer-bulk p { font-size: .8rem; margin: .5rem 0; }
+.atomer-bulk a { font-size: .85rem; text-decoration: underline; }
+.atomer-select-cell { width: 2.5rem; }
+.atomer-table select { width: 180px; }
+.atomer-table .atomer-persist { font-size: .75rem; margin-top: .5rem; max-width: 200px; }
+.atomer-table .atomer-visibility { white-space: nowrap; }

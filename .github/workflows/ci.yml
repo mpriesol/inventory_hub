@@ -172,6 +172,10 @@ jobs:
 
       - name: Check stock automation settings interactions
         run: node frontend/tests/stock-settings-ui.cjs
+
+      - name: Warehouse and availability catalog interactions
+        run: node frontend/tests/settings-catalogs-ui.cjs
+
       - name: Stock publication interaction checks
         run: node frontend/tests/stock-publication-ui.cjs
 

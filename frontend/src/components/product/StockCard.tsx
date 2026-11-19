@@ -1,3 +1,4 @@
+import { ProductAvailabilityOverridePanel } from './ProductAvailabilityOverridePanel';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -32,7 +33,7 @@ const sections: { id: StockCardSection; icon: typeof Box }[] = [
   { id: 'overview', icon: LayoutDashboard }, { id: 'stock', icon: Box }, { id: 'prices', icon: Layers },
   { id: 'shops', icon: Store }, { id: 'history', icon: History },
 ];
-const childKeys = ['fifo', 'adjustment', 'supplier', 'mapping', 'sku', 'publication', 'price'] as const;
+const childKeys = ['fifo', 'adjustment', 'supplier', 'mapping', 'sku', 'publication', 'price', 'availability'] as const;
 const decimal = (value: string, digits: number) => new RegExp(`^\\d+(?:[.,]\\d{1,${digits}})?$`).test(value);
 
 export function StockCard({ productId, sku, warehouseCode, initialSection = 'overview', onClose, onChanged, readOnlyReason }: StockCardProps) {
@@ -356,6 +357,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
                 <div><dt>{c('location')}</dt><dd>{row.warehouse?.location || c('notSet')}</dd></div>
                 <div><dt>{c('typeUnit')}</dt><dd>{c(row.item_type === 'service' ? 'service' : 'goods')} / {unitLabel}</dd></div>
               </dl>
+              <ProductAvailabilityOverridePanel key={`availability-${row.id}-${childVersion}`} row={row} disabled={mutationDisabled || draftDirty || !!tool} onChanged={refreshed} onDirtyChange={dirtyCallbacks.availability} onBusyChange={busyCallbacks.availability} />
               {row.supplier_availability && <div className="stock-card__note stock-card__availability"><strong>{c('supplierAvailability')}</strong><p>{row.supplier_availability.label || c('unknown')}{!row.supplier_availability.fresh && ` · ${c('availabilityNotFresh')}`}</p></div>}
               <div className="stock-card__overview-notes">
                 <section className="stock-card__block"><h4>{c('description')}</h4><p className="stock-card__description">{stockCardDescription(row.common.description) || c('noDescription')}</p></section>

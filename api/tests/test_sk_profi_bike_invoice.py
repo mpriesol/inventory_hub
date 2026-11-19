@@ -11,10 +11,14 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from inventory_hub import config_io
 from inventory_hub.adapters import sk_profi_bike_invoice as adapter
+from inventory_hub.database import get_session
 from inventory_hub.routers import suppliers, receiving_db
+from inventory_hub.services import invoice_archive
+from inventory_hub.settings import settings
 
 
 def invoice_text():
@@ -268,12 +272,23 @@ class SkpInvoiceParserTests(unittest.TestCase):
 
 class SkpInvoiceUploadTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch('inventory_hub.services.invoice_archive.archive_after_upload',
-                                AsyncMock(return_value={'status': 'completed'})))
+        self.db = AsyncMock()
+        self.db.scalar.return_value = None
+        self.db.execute.return_value = Mock()
+        self.db.execute.return_value.mappings.return_value.first.return_value = {
+            'archived_at': None, 'processing_status': 'unprocessed'}
+        self.enterContext(patch.object(invoice_archive, 'resolve_supplier',
+            AsyncMock(return_value=SimpleNamespace(id=1, code='sk-profi-bike'))))
+        self.ingest = self.enterContext(patch.object(invoice_archive, 'ingest_invoice',
+            AsyncMock(return_value={'id': 7, 'replayed': False, 'lines_count': 3})))
         folder = self.enterContext(tempfile.TemporaryDirectory())
         self.root = Path(folder)
         self.enterContext(patch.object(suppliers, "DATA_ROOT", self.root))
         self.enterContext(patch.object(config_io, "DATA_ROOT", self.root))
+        self.enterContext(patch.object(settings, 'INVENTORY_DATA_ROOT', self.root))
+        token = 'invoice-parser-fixture-' + 'x' * 32
+        self.enterContext(patch.object(settings, 'AI_CONTENT_ACCESS_TOKEN', SecretStr(token)))
+        self.headers = {'Authorization': 'Bearer ' + token}
         config = self.root / "suppliers/sk-profi-bike/config.json"
         config.parent.mkdir(parents=True)
         config.write_text('{"product_code_prefix":"SKP-"}')
@@ -281,6 +296,9 @@ class SkpInvoiceUploadTests(unittest.TestCase):
         self.reader = self.enterContext(patch.object(adapter, "parse_invoice_pdf", return_value=self.invoice))
         app = FastAPI()
         app.include_router(suppliers.router)
+        async def session():
+            yield self.db
+        app.dependency_overrides[get_session] = session
         self.client = self.enterContext(TestClient(app))
         self.invoice_root = config.parent / "invoices"
         self.index_path = self.invoice_root / "index.latest.json"
@@ -289,7 +307,7 @@ class SkpInvoiceUploadTests(unittest.TestCase):
     def upload(self, filename="arbitrary-download-name.pdf", **kwargs):
         return self.client.post("/suppliers/sk-profi-bike/upload-invoice", files={
             "file": (filename, b"%PDF-1.7 synthetic", "application/pdf"),
-        }, **kwargs)
+        }, headers=self.headers, **kwargs)
 
     def test_upload_uses_invoice_identity_date_and_receiving_csv(self):
         result = self.upload()
@@ -315,12 +333,14 @@ class SkpInvoiceUploadTests(unittest.TestCase):
         self.assertEqual(self.index_path.read_bytes(), before)
         self.assertEqual(len(list((self.invoice_root / "csv").glob("*.csv"))), 1)
 
-    def test_changed_same_number_rejects_without_overwriting(self):
+    def test_changed_receiving_source_is_partial_without_overwriting(self):
         self.assertEqual(self.upload().status_code, 200)
         before = self.index_path.read_bytes()
         self.reader.return_value = adapter.parse_invoice_text(invoice_text().replace("Test product alpha", "Changed product"))
         response = self.upload()
-        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['processing']['issues'], ['invoice_receiving_preparation_conflict'])
+        self.assertFalse(response.json()['processing']['receiving_ready'])
         self.assertEqual(self.index_path.read_bytes(), before)
 
     def test_invalid_pdf_or_override_does_not_create_receiving_files(self):
@@ -328,7 +348,10 @@ class SkpInvoiceUploadTests(unittest.TestCase):
         self.assertEqual(result.status_code, 422, result.text)
         self.reader.side_effect = adapter.InvoiceParseError("Invalid document")
         result = self.upload()
-        self.assertEqual(result.status_code, 422, result.text)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json()['processing']['issues'], ['invoice_parse_failed'])
+        self.assertEqual(self.ingest.await_args.kwargs['files'][0]['content'], b'%PDF-1.7 synthetic')
+        self.assertEqual(self.ingest.await_args.kwargs['lines'], [])
         self.assertFalse(self.invoice_root.exists())
 
     def test_recover_interrupted_upload_before_index(self):
@@ -345,9 +368,11 @@ class SkpInvoiceUploadTests(unittest.TestCase):
         raw.parent.mkdir(parents=True)
         raw.write_bytes(b"%PDF-1.7 different prior document")
         prior = adapter.parse_invoice_text(invoice_text().replace("DEMO-A", "DEMO-DIFFERENT"))
-        self.reader.side_effect = [self.invoice, prior]
+        self.reader.side_effect = lambda data: self.invoice if data == b'%PDF-1.7 synthetic' else prior
         response = self.upload()
-        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['processing']['issues'], ['invoice_receiving_preparation_conflict'])
+        self.assertEqual(raw.read_bytes(), b'%PDF-1.7 different prior document')
         self.assertFalse((self.invoice_root / "csv").exists())
         self.assertFalse(self.index_path.exists())
 

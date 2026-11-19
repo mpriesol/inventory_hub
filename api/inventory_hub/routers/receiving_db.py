@@ -626,6 +626,7 @@ async def create_session(
         stmt = select(Warehouse).where(Warehouse.code == request.warehouse_code)
     else:
         stmt = select(Warehouse).where(Warehouse.is_default == True)  # noqa: E712
+    stmt = stmt.where(Warehouse.is_active.is_(True)).with_for_update(read=True)
     result = await db.execute(stmt)
     warehouse = result.scalar_one_or_none()
     if not warehouse:
@@ -1031,6 +1032,10 @@ async def finalize_session(
         raise HTTPException(409, detail=error.detail) from None
 
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    warehouse = await db.scalar(select(Warehouse).where(Warehouse.id == session.warehouse_id,
+        Warehouse.is_active.is_(True)).with_for_update(read=True).execution_options(populate_existing=True))
+    if warehouse is None:
+        raise HTTPException(409, detail={"code": "receiving_warehouse_inactive"})
     for line in lines:
         if line.received_qty <= 0:
             continue

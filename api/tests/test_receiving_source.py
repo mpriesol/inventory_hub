@@ -11,12 +11,16 @@ from unittest.mock import AsyncMock, Mock, patch
 import pandas as pd
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from inventory_hub.adapters import sk_profi_bike_invoice as skp, zookee_invoice, paul_lange_web as pl
 from inventory_hub.adapters.northfinder_xlsx_parser import parse_xlsx_to_csv
 from inventory_hub.db_models import ReceivingStatus
+from inventory_hub.database import get_session
 from inventory_hub.routers import receiving_db as receiving, suppliers
+from inventory_hub.services import invoice_archive
 from inventory_hub.services import receiving_source as source
+from inventory_hub.settings import settings
 from test_zookee import pdf, isdoc
 
 
@@ -117,18 +121,34 @@ class ReceivingSourceTests(TestCase):
         self.assertFalse(result["success"])
         self.assertFalse(target.exists())
 
-    def test_direct_csv_and_foreign_supplier_spreadsheet_stop_before_file_write(self):
+    def test_direct_csv_and_foreign_spreadsheet_archive_without_receiving_source(self):
         from inventory_hub import config_io
         self.write("suppliers/synthetic/config.json", "{}")
-        with patch.object(suppliers, "DATA_ROOT", self.root), patch.object(config_io, "DATA_ROOT", self.root):
+        db = AsyncMock()
+        db.scalar.return_value = None
+        db.execute.return_value = Mock()
+        db.execute.return_value.mappings.return_value.first.return_value = {
+            'archived_at': None, 'processing_status': 'unprocessed'}
+        token = 'receiving-source-fixture-' + 'x' * 32
+        with patch.object(suppliers, "DATA_ROOT", self.root), patch.object(config_io, "DATA_ROOT", self.root), \
+                patch.object(settings, 'INVENTORY_DATA_ROOT', self.root), \
+                patch.object(settings, 'AI_CONTENT_ACCESS_TOKEN', SecretStr(token)), \
+                patch.object(invoice_archive, 'resolve_supplier', AsyncMock(return_value=SimpleNamespace(id=1, code='synthetic'))), \
+                patch.object(invoice_archive, 'ingest_invoice', AsyncMock(return_value={'id': 7, 'replayed': False})) as ingest:
             app = FastAPI(); app.include_router(suppliers.router)
+            async def session():
+                yield db
+            app.dependency_overrides[get_session] = session
             with TestClient(app) as client:
-                for extension, code in (("csv", "receiving_direct_csv_unsupported"),
-                                        ("xlsx", "receiving_spreadsheet_supplier_unsupported")):
+                for extension, content, code in (("csv", b'SCM;QTY;PRICE\nA;1;1\n', "receiving_source_unverified"),
+                                               ("xlsx", b'synthetic', "invoice_parser_unavailable")):
                     response = client.post("/suppliers/synthetic/upload-invoice",
-                        files={"file": (f"document.{extension}", b"synthetic", "application/octet-stream")})
-                    self.assertEqual(response.status_code, 422)
-                    self.assertEqual(response.json()["detail"]["code"], code)
+                        headers={'Authorization': 'Bearer ' + token},
+                        files={"file": (f"document.{extension}", content, "application/octet-stream")})
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json()['processing']['issues'], [code])
+                    self.assertFalse(response.json()['processing']['receiving_ready'])
+                    self.assertEqual(ingest.await_args.kwargs['files'][0]['content'], content)
             self.assertFalse((self.root / "suppliers/synthetic/invoices").exists())
 
     def test_paul_lange_legacy_refresh_verifies_bytes_without_resetting_receiving(self):

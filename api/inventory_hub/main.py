@@ -257,6 +257,8 @@ if settings.USE_POSTGRES:
     app.include_router(atomer_content_router)
     from inventory_hub.routers.atomer_availability import router as atomer_availability_router
     app.include_router(atomer_availability_router)
+    from inventory_hub.routers.settings_catalogs import router as settings_catalogs_router
+    app.include_router(settings_catalogs_router)
     from inventory_hub.routers.order_audit import router as order_audit_router
     app.include_router(order_audit_router)
     from inventory_hub.routers.order_stock import router as order_stock_router
