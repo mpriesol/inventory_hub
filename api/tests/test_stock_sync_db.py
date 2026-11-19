@@ -51,7 +51,7 @@ class StockSyncDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((root/'019_stock_tracking.sql').read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid','partial','paid')")
             for name in ('002_invoice_management.sql','005_ai_content.sql','006_opening_stock.sql','007_order_stock.sql','008_order_collection.sql',
-                         '009_stock_automation.sql','010_stock_publication.sql','011_fifo.sql','015_stock_sync.sql','017_stock_adjustments.sql',
+                         '009_stock_automation.sql','010_stock_publication.sql','011_fifo.sql','012_product_editor.sql','015_stock_sync.sql','017_stock_adjustments.sql',
                          '025_stock_native.sql','026_stock_delta.sql'):
                 await connection.execute((root/name).read_text())
             await apply_current_core_schema(connection)

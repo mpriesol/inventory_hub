@@ -1,3 +1,4 @@
+import type { ManualAvailability } from './catalogs';
 import { hubRequest } from './access';
 import { SkuIdentityInput } from './skuPolicy';
 
@@ -15,6 +16,7 @@ export interface ProductCardSupplier {
 }
 export interface ProductEditorRow {
   canonical_product_id?: number; retired?: boolean;
+  availability_override?: ManualAvailability | null;
   is_active: boolean; supplier_linked: boolean; item_type: ProductItemType; stock_unit: StockUnit; item_definition_locked?: boolean;
   id: number; sku: string; group: { id: number; code: string; name: string } | null;
   attributes: { name: string; value: string }[]; eans: string[]; supplier_codes: { supplier_code: string; code: string }[]; image_url: string | null;
@@ -41,9 +43,10 @@ export interface ProductEditorRow {
       parent_code: string | null; is_variant: boolean; sale_to_stock_factor: string; is_listed: boolean;
       shop_url?: string | null; shop_admin_url?: string | null }[];
     observed: { name: string | null; price: string | null; price_basis: 'unknown'; visible: boolean | null }; published_fields?: ProductPublicationField[]; state: 'inherited' | 'saved_unpublished' | 'published' }[];
-  overrides: { common?: Record<string, unknown>; variant?: Record<string, unknown>; warehouses?: Record<string, Record<string, unknown>>; shops?: Record<string, Record<string, unknown>> };
+  overrides: { availability?: ManualAvailability; common?: Record<string, unknown>; variant?: Record<string, unknown>; warehouses?: Record<string, Record<string, unknown>>; shops?: Record<string, Record<string, unknown>> };
 }
 export interface ProductEditorFilters {
+  availability_override?: 'all' | 'manual' | 'automatic';
   activity: 'all' | 'active' | 'inactive'; supplier_link: 'all' | 'linked' | 'unlinked';
   stock_scope: 'all' | 'confirmed' | 'unconfirmed' | 'in_stock';
   q: string; brand: string; shop_code: string; warehouse_code: string; page: number; page_size: number;

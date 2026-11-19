@@ -24,7 +24,7 @@ import { useUnsavedNavigationGuard } from '../hooks/useUnsavedNavigationGuard';
 import { formatNumber } from '../utils/format';
 import './ProductEditorPage.css';
 
-const initialFilters: ProductEditorFilters = { q: '', brand: '', shop_code: '', warehouse_code: '', stock_scope: 'all', activity: 'all', supplier_link: 'all', page: 1, page_size: 50, sort: 'group_sku', direction: 'asc' };
+const initialFilters: ProductEditorFilters = { q: '', brand: '', shop_code: '', warehouse_code: '', stock_scope: 'all', activity: 'all', supplier_link: 'all', availability_override: 'all', page: 1, page_size: 50, sort: 'group_sku', direction: 'asc' };
 const CONTEXT_KEY = 'product-editor-context-v1';
 const PAGE_SIZES = [25, 50, 100, 250, 500];
 function readContext(): { filters: ProductEditorFilters; selected?: number[]; scroll?: number; restored?: boolean } {
@@ -431,7 +431,7 @@ export function ProductEditorPage() {
     if (column.key === 'supplier_linked') return <span>{t(row.supplier_linked ? 'productEditor.linkStates.linked' : 'productEditor.linkStates.unlinked')}</span>;
     if (column.key === 'tracking') return <span className="product-editor-presence"><strong>{t(`productEditor.tracking.${row.stock.tracking_status || (row.stock.known ? 'confirmed' : warehouse ? 'unconfirmed' : 'no_warehouse')}`)}</strong>{row.stock.started_at && <small>{new Date(row.stock.started_at).toLocaleString(i18n.language)}</small>}</span>;
     const staged = draftValue(drafts[row.id], column.key, mode), value = staged !== undefined ? staged : originalValue(row, column.key, mode);
-    if (column.key === 'is_active') return t(value ? 'productEditor.activityStates.active' : 'productEditor.activityStates.inactive');
+    if (column.key === 'is_active') return <>{t(value ? 'productEditor.activityStates.active' : 'productEditor.activityStates.inactive')}{row.availability_override && <small className="stock-card__badge">{t('catalogs.manual')}</small>}</>;
     if (column.key === 'state') {
       if (drafts[row.id]?.status) return t(`productEditor.rowStates.${drafts[row.id].status}`);
       if (drafts[row.id]) return t('productEditor.rowStates.dirty');
@@ -478,6 +478,7 @@ export function ProductEditorPage() {
         <label>{t('productEditor.sort')}<select data-testid="sort" value={filters.sort} disabled={locked} onChange={event => { setLocalSort(null); changeFilter('sort', event.target.value as ProductEditorFilters['sort']); }}>{['group_sku', 'sku', 'name'].map(value => <option value={value} key={value}>{t(`productEditor.sorts.${value}`)}</option>)}</select></label>
         <label>{t('productEditor.fields.is_active')}<select data-testid="activity-filter" value={filters.activity} disabled={locked} onChange={event => changeFilter('activity', event.target.value as ProductEditorFilters['activity'])}>{['all', 'active', 'inactive'].map(value => <option value={value} key={value}>{t(`productEditor.activityStates.${value}`)}</option>)}</select></label>
         <label>{t('productEditor.fields.supplier_linked')}<select data-testid="supplier-link-filter" value={filters.supplier_link} disabled={locked} onChange={event => changeFilter('supplier_link', event.target.value as ProductEditorFilters['supplier_link'])}>{['all', 'linked', 'unlinked'].map(value => <option value={value} key={value}>{t(`productEditor.linkStates.${value}`)}</option>)}</select></label>
+        <label>{t('catalogs.overrideTitle')}<select data-testid="availability-override-filter" value={filters.availability_override || 'all'} disabled={locked} onChange={event => changeFilter('availability_override', event.target.value as ProductEditorFilters['availability_override'])}>{['all', 'manual', 'automatic'].map(value => <option value={value} key={value}>{t(`catalogs.${value}`)}</option>)}</select></label>
         <label>{t('productEditor.stockScope')}<select data-testid="stock-scope" value={filters.stock_scope} disabled={locked} onChange={event => changeFilter('stock_scope', event.target.value as ProductEditorFilters['stock_scope'])}>{['confirmed', 'in_stock', 'unconfirmed', 'all'].map(value => <option value={value} key={value}>{t(`productEditor.stockScopes.${value}`)}</option>)}</select></label>
         <Button data-testid="load" type="submit" variant="secondary" size="sm" icon={<RefreshCw size={14} />} title={t('productEditor.refreshList')} disabled={!!busy || uncertain}>{t(busy === 'load' ? 'productEditor.loading' : filtersPending ? 'productEditor.applyFilters' : 'productEditor.refreshList')}</Button>
         {filtersPending && <span className="sr-only" role="status" data-testid="filters-pending">{t('productEditor.filtersPending')}</span>}

@@ -89,7 +89,8 @@ async function scan(){await act(async()=>{
   await scan();
   assert(document.body.textContent.includes(i18n.t('receiving.sourceErrors.receiving_source_currency_unsupported')));
   assert(![...document.querySelectorAll('a')].some(el=>el.textContent===i18n.t('receiving.openExistingReceipt')),'A later source error clears the old duplicate link');
-  assert.equal(document.querySelector('input[type="file"]').accept,'.pdf','Unverified CSV upload is not offered');
+  assert(!document.querySelector('input[type="file"]'),'Invoice upload is isolated in the shared modal');
+  assert.equal(find('receiving-back').getAttribute('href'),'/receiving');
   await act(async()=>{root.unmount();});
   console.log('Receiving lookup UI: invoice choice, scan safety, completed receipts, incomplete lookup, source rejection and duplicate recovery passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

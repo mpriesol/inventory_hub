@@ -25,7 +25,7 @@ from inventory_hub.db_models import MovementType, Product, ReceivingStatus, Supp
 from inventory_hub.db_models_ext import ReceivingLine, ReceivingSession, StockBalance, StockMovement
 from inventory_hub.fifo_models import FifoLayer
 from inventory_hub.receiving_operation_types import ReceivingOperationApply, ReceivingOperationPreview
-from inventory_hub.mixed_receiving_types import BatchScan, BatchFinalize
+from inventory_hub.mixed_receiving_types import BatchScan, BatchFinalize, BatchManualScan
 from inventory_hub.routers import mixed_receiving as routes
 from inventory_hub.routers import receiving_db as receiving
 from inventory_hub.services import fifo, receiving_operations, invoice_processing, mixed_receiving
@@ -33,6 +33,16 @@ from inventory_hub.services.identifiers import ProductIdentifierService
 
 
 class MixedReceivingInputTests(unittest.TestCase):
+    def test_manual_exception_requires_confirmation_documented_reason_and_nullable_cost(self):
+        payload = {'request_id': uuid4(), 'code': '4006381333931', 'confirmed_without_invoice': True,
+                   'reason': 'Invoice not available'}
+        self.assertIsNone(BatchManualScan(**payload).unit_cost)
+        for change in ({'confirmed_without_invoice': False}, {'confirmed_without_invoice': 1},
+                       {'reason': '  '}, {'unit_cost': '0'}, {'cost_status': 'known'},
+                       {'unit_cost': '-1', 'cost_status': 'known'}, {'product_id': 99}):
+            with self.subTest(change=change), self.assertRaises(ValidationError):
+                BatchManualScan(**{**payload, **change})
+
     def test_final_confirmation_is_explicit_true_and_does_not_accept_extra_flags(self):
         payload = {"request_id": uuid4(), "preview_hash": "a" * 64, "confirmed": True}
         BatchFinalize(**payload)
@@ -63,7 +73,8 @@ class MixedReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2] / "infra" / "db-init"
             for filename in ("015_stock_sync.sql", "025_stock_native.sql", "026_stock_delta.sql",
-                             "046_shared_stock_sales.sql", "036_stock_sync_dirty.sql", "054_mixed_receiving.sql"):
+                             "046_shared_stock_sales.sql", "036_stock_sync_dirty.sql", "054_mixed_receiving.sql",
+                             "056_receiving_manual.sql"):
                 await connection.execute((root / filename).read_text())
         finally:
             await connection.close()
@@ -642,3 +653,139 @@ class MixedReceivingDatabaseTests(unittest.IsolatedAsyncioTestCase):
             state = await invoice_processing.detail(db, row)
         self.assertEqual(state["status"], "received")
         self.assertFalse(state["receipts"][0]["reversed"])
+
+    async def manual_scan(self, batch_id, **changes):
+        payload = {'request_id': str(uuid4()), 'code': '4006381333931', 'qty': '1',
+                   'confirmed_without_invoice': True, 'reason': 'Invoice not available', **changes}
+        return await self.request('POST', f'/receiving/batches/{batch_id}/manual-scan', payload), payload
+
+    async def test_manual_receipt_uses_existing_identity_and_nullable_fifo_cost_once(self):
+        batch = await self.batch()
+        product = await self.request('GET', f'/receiving/batches/{batch["id"]}/manual-product?code=4006381333931')
+        self.assertEqual(product['product_id'], self.product_id)
+        staged, payload = await self.manual_scan(batch['id'])
+        self.assertEqual(staged['summary']['items'][0]['source_kind'], 'manual')
+        self.assertIsNone(await self.balance())
+        replay = await self.request('POST', f'/receiving/batches/{batch["id"]}/manual-scan', payload)
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(D(replay['summary']['total_qty']), D(1))
+        result, confirmation = await self.confirm(batch['id'])
+        replay = await self.request('POST', f'/receiving/batches/{batch["id"]}/finalize', confirmation)
+        self.assertEqual(result['result'], replay['result'])
+        self.assertEqual(await self.balance(), (D(1), None))
+        async with self.sessions() as db:
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM receiving_sessions')), 0)
+            layer = await db.scalar(select(FifoLayer))
+            self.assertEqual(layer.cost_status, 'unknown')
+            self.assertIsNone(layer.unit_cost)
+            self.assertEqual(layer.provenance['source_reference'], 'Invoice not available')
+        self.assertEqual(len(await self.movements()), 1)
+
+    async def test_manual_and_invoice_receipt_post_atomically_in_same_batch(self):
+        receipt_id, _ = await self.invoice(ordered='1')
+        batch = await self.batch()
+        await self.scan(batch['id'])
+        staged, _ = await self.manual_scan(batch['id'], qty='2', unit_cost='4.5000', cost_status='known')
+        self.assertEqual({D(item['stock_qty_after']) for item in staged['summary']['items']}, {D(3)})
+        result, _ = await self.confirm(batch['id'])
+        self.assertEqual(result['result']['product_ids'], [self.product_id])
+        self.assertEqual(await self.balance(), (D(3), D(14)))
+        self.assertEqual(await self.receipt(receipt_id), (ReceivingStatus.completed, [D(1)]))
+        self.assertEqual([row['quantity'] for row in await self.movements()], [D(1), D(2)])
+
+    async def test_manual_cancel_preserves_operation_replay_and_allows_archive_restore(self):
+        batch = await self.batch()
+        staged, payload = await self.manual_scan(batch['id'])
+        archive = {'request_id': str(uuid4()), 'reason': 'Remove empty test draft', 'empty_only': True}
+        failure = await self.request('POST', f'/receiving/batches/{batch["id"]}/archive', archive, expected=409)
+        self.assertEqual(failure['detail']['code'], 'mixed_receiving_not_empty')
+        await self.request('POST', f'/receiving/batches/{batch["id"]}/scans/{staged["scan_id"]}/cancel',
+                           {'request_id': str(uuid4())})
+        result = await self.request('POST', f'/receiving/batches/{batch["id"]}/archive', archive)
+        self.assertTrue(result['archived'])
+        self.assertEqual((await self.request('GET', '/receiving/batches'))['batches'], [])
+        self.assertTrue((await self.request('POST', f'/receiving/batches/{batch["id"]}/archive', archive))['replayed'])
+        replay = await self.request('POST', f'/receiving/batches/{batch["id"]}/manual-scan', payload)
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(replay['summary']['total_qty'], '0')
+        self.assertTrue(replay['summary']['archived'])
+        await self.request('POST', f'/receiving/batches/{batch["id"]}/manual-scan',
+                           {**payload, 'request_id': str(uuid4())}, expected=409)
+        restored = await self.request('POST', f'/receiving/batches/{batch["id"]}/restore',
+                           {**archive, 'request_id': str(uuid4())})
+        self.assertFalse(restored['archived'])
+        self.assertEqual(len((await self.request('GET', '/receiving/batches'))['batches']), 1)
+        self.assertEqual(await self.movements(), [])
+
+    async def test_manual_identity_change_blocks_whole_mixed_batch(self):
+        receipt_id, _ = await self.invoice(ordered='1')
+        batch = await self.batch()
+        await self.scan(batch['id'])
+        await self.manual_scan(batch['id'])
+        async with self.sessions() as db:
+            product = await db.get(Product, self.product_id)
+            product.is_active = False
+            await db.commit()
+        blocked, _ = await self.confirm(batch['id'], expected=409)
+        self.assertEqual(blocked['detail']['code'], 'mixed_receiving_blocked')
+        self.assertEqual(await self.movements(), [])
+        self.assertEqual((await self.receipt(receipt_id))[1], [D(0)])
+
+    async def test_completed_batch_archival_does_not_change_stock_or_invoices(self):
+        receipt_id, _ = await self.invoice(ordered='1')
+        batch = await self.batch()
+        await self.scan(batch['id'])
+        await self.confirm(batch['id'])
+        original = await self.movements()
+        await self.request('POST', f'/receiving/batches/{batch["id"]}/archive',
+                           {'request_id': str(uuid4()), 'reason': 'Hide historical receipt', 'empty_only': False})
+        self.assertEqual((await self.request('GET', '/receiving/batches?status=completed'))['batches'], [])
+        self.assertEqual(await self.movements(), original)
+        self.assertEqual(await self.balance(), (D(1), D(5)))
+        self.assertEqual(await self.receipt(receipt_id), (ReceivingStatus.completed, [D(1)]))
+
+    async def test_manual_post_failure_rolls_back_invoice_and_retries_original_confirmation(self):
+        receipt_id, _ = await self.invoice(ordered='1')
+        batch = await self.batch()
+        await self.scan(batch['id'])
+        await self.manual_scan(batch['id'])
+        preview = await self.request('POST', f'/receiving/batches/{batch["id"]}/preview', {})
+        payload = {'request_id': str(uuid4()), 'preview_hash': preview['preview_hash'], 'confirmed': True}
+        with patch.object(fifo, 'write_documented_receipt', side_effect=fifo.FifoError('fifo_cutover_required')):
+            await self.request('POST', f'/receiving/batches/{batch["id"]}/finalize', payload, expected=409)
+        self.assertEqual(await self.movements(), [])
+        self.assertIsNone(await self.balance())
+        self.assertEqual((await self.receipt(receipt_id))[1], [D(0)])
+        result = await self.request('POST', f'/receiving/batches/{batch["id"]}/finalize', payload)
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual(len(await self.movements()), 2)
+        self.assertEqual(await self.balance(), (D(2), None))
+
+    async def test_concurrent_manual_scans_with_one_uuid_create_one_physical_receipt(self):
+        batch = await self.batch()
+        payload = {'request_id': str(uuid4()), 'code': '4006381333931', 'qty': '1',
+                   'confirmed_without_invoice': True, 'reason': 'Invoice not available'}
+        responses = await asyncio.gather(*[self.request('POST',
+            f'/receiving/batches/{batch["id"]}/manual-scan', payload) for _ in range(2)])
+        self.assertEqual(sorted(row['replayed'] for row in responses), [False, True])
+        self.assertEqual([D(row['summary']['total_qty']) for row in responses], [D(1), D(1)])
+        await self.confirm(batch['id'])
+        self.assertEqual(len(await self.movements()), 1)
+
+    async def test_inactive_warehouse_blocks_new_writes_but_preserves_completed_replay(self):
+        first = await self.batch()
+        await self.manual_scan(first['id'])
+        completed, confirmation = await self.confirm(first['id'])
+        pending = await self.batch()
+        await self.manual_scan(pending['id'])
+        async with self.sessions() as db:
+            await db.execute(text('UPDATE warehouses SET is_active=false WHERE id=:id'), {'id': self.warehouse_id})
+            await db.commit()
+        error = await self.request('POST', '/receiving/batches',
+            {'request_id': str(uuid4()), 'warehouse_code': 'receipt-test'}, expected=409)
+        self.assertEqual(error['detail']['code'], 'mixed_receiving_warehouse_missing')
+        error, _ = await self.confirm(pending['id'], expected=409)
+        self.assertEqual(error['detail']['code'], 'mixed_receiving_warehouse_missing')
+        replay = await self.request('POST', f'/receiving/batches/{first["id"]}/finalize', confirmation)
+        self.assertEqual(replay['result'], completed['result'])
+        self.assertEqual(len(await self.movements()), 1)

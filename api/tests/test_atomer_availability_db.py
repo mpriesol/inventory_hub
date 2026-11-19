@@ -27,6 +27,8 @@ from inventory_hub.atomer_availability_types import (
     RunInput,
     ExportInput,
     Override,
+    EditInput,
+    RowFilter,
 )
 from inventory_hub.db_models import ProductIdentifier, IdentifierType
 from inventory_hub.db_models_ext import StockBalance, StockMovement
@@ -54,6 +56,10 @@ class AtomerAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
                     / "infra/db-init/055_atomer_availability.sql"
                 ).read_text()
             )
+            root = Path(__file__).resolve().parents[2] / "infra/db-init"
+            for filename in ("015_stock_sync.sql", "025_stock_native.sql", "026_stock_delta.sql",
+                             "036_stock_sync_dirty.sql", "057_setting_catalogs.sql"):
+                await conn.execute((root / filename).read_text())
         finally:
             await conn.close()
         config_io.save_shop(
@@ -589,7 +595,7 @@ class AtomerAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for result in (changes, page, issues):
                 self.assertEqual(result["summary"], expected_summary)
                 self.assertIn(
-                    "Source option outside filter", result["availability_options"]
+                    "Source option outside filter", result["filter_options"]["availability"]
                 )
             run = await db.get(Run, queued["id"])
             self.assertEqual(run.document["rows"], rows)
@@ -683,3 +689,176 @@ class AtomerAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
             }
             self.assertIn(global_id, downloadable)
             self.assertIn(new_receipt_id, downloadable)
+
+
+    async def test_whole_filtered_edit_crosses_5000_rows_and_replays_after_later_edits(self):
+        await self.stock()
+        ready = await self.ready()
+        async with self.sessions() as db:
+            run = await db.get(Run, ready["id"])
+            template = run.document["rows"][0]
+            rows = [dict(template, code=f"ROW-{i:05}", name="Červená bunda") for i in range(5002)]
+            rows.append(dict(template, code="OTHER", name="Modrá bunda"))
+            run.document = {**run.document, "rows": rows, "summary": service.summarize(rows)}
+            await db.commit()
+        request = EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+            selection={"all_filtered": True, "filter": {"search": "cervena"}, "excluded_codes": ["ROW-00001"]},
+            changes={"visibility": False, "include_in_export": False})
+        async with self.sessions() as db:
+            first = await service.edit(db, ready["id"], request, actor="user:7")
+            await db.commit()
+        self.assertEqual(first["updated"], 5001)
+        async with self.sessions() as db:
+            detail = await service.get_run(db, ready["id"], offset=4900, limit=100,
+                filters=RowFilter(search="cervena", include_in_export=False), sort="code", direction="desc")
+            self.assertEqual((detail["total"], detail["selectable_total"]), (5001, 5001))
+            self.assertTrue(all(r["proposed_visibility"] is False for r in detail["rows"]))
+            second = await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=first["revision"],
+                selection={"codes": ["OTHER"]}, changes={"availability": "Na predobjednanie"}))
+            await db.commit()
+        async with self.sessions() as db:
+            self.assertEqual(await service.edit(db, ready["id"], request), first)
+            self.assertEqual(await service.get_edit(db, ready["id"], str(request.request_id)), first)
+            self.assertEqual((await service.get_run(db, ready["id"]))["revision"], second["revision"])
+        changed = request.model_copy(update={"changes": request.changes.model_copy(update={"visibility": True})})
+        with self.assertRaisesRegex(service.ExportError, "request_conflict"):
+            async with self.sessions() as db:
+                await service.edit(db, ready["id"], changed)
+
+    async def test_persistent_manual_values_apply_on_export_and_next_preview_without_stock_changes(self):
+        from inventory_hub.services import availability_catalog
+        await self.stock()
+        ready = await self.ready()
+        before = await self.snapshot()
+        request = EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+            selection={"codes": ["RECEIPT-A"]}, changes={"availability": "Na predobjednanie", "visibility": False,
+                                                               "apply_to_every_export": True})
+        async with self.sessions() as db:
+            edited = await service.edit(db, ready["id"], request)
+            await db.commit()
+        async with self.sessions() as db:
+            self.assertEqual(await availability_catalog.get_product_overrides(db, [self.product_id]), {})
+            exported = await service.export(db, ready["id"], ExportInput(expected_revision=edited["revision"]), actor="user:7")
+            await db.commit()
+        async with self.sessions() as db:
+            saved = (await availability_catalog.get_product_overrides(db, [self.product_id]))[self.product_id]
+            self.assertEqual(saved["label"], "Na predobjednanie")
+            self.assertIs(saved["visible"], False)
+            self.assertEqual(saved["actor"], "user:7")
+            self.assertEqual(saved["source"], "manual")
+            replay = await service.export(db, ready["id"], ExportInput(expected_revision=edited["revision"]))
+            self.assertEqual(replay, exported)
+        fresh = await self.ready()
+        async with self.sessions() as db:
+            row = (await service.get_run(db, fresh["id"]))["rows"][0]
+            self.assertEqual(row["proposed_availability"], "Na predobjednanie")
+            self.assertIs(row["proposed_visibility"], False)
+            self.assertTrue(row["manual_override"])
+            self.assertFalse(row["apply_to_every_export"])
+        self.assertEqual(await self.snapshot(), before)
+
+    async def test_excluded_row_never_persists_and_invalid_label_is_rejected(self):
+        from inventory_hub.services import availability_catalog
+        await self.stock()
+        ready = await self.ready()
+        with self.assertRaisesRegex(service.ExportError, "availability_value_missing"):
+            async with self.sessions() as db:
+                await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                    selection={"codes": ["RECEIPT-A"]}, changes={"availability": "Not registered"}))
+        async with self.sessions() as db:
+            edit = await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                selection={"codes": ["RECEIPT-A"]}, changes={"visibility": False, "include_in_export": False,
+                                                         "apply_to_every_export": True}))
+            await db.commit()
+        async with self.sessions() as db:
+            await service.export(db, ready["id"], ExportInput(expected_revision=edit["revision"]))
+            await db.commit()
+        async with self.sessions() as db:
+            self.assertEqual(await availability_catalog.get_product_overrides(db, [self.product_id]), {})
+            content, _, _ = await service.download(db, ready["id"])
+            self.assertEqual(len(list(csv.reader(io.StringIO(content.decode("utf-8-sig")), delimiter=";"))), 1)
+
+    async def test_daily_preview_rejects_manual_edits_and_technical_conflict_stays_blocked(self):
+        await self.stock()
+        ready = await self.ready()
+        async with self.sessions() as db:
+            run = await db.get(Run, ready["id"])
+            run.trigger = "daily"
+            await db.commit()
+        with self.assertRaisesRegex(service.ExportError, "preview_changed"):
+            async with self.sessions() as db:
+                await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                    selection={"all_filtered": True}, changes={"visibility": False}))
+        with self.assertRaisesRegex(service.ExportError, "preview_changed"):
+            async with self.sessions() as db:
+                await service.export(db, ready["id"], ExportInput(expected_revision=ready["revision"],
+                    overrides=[Override(code="RECEIPT-A", visibility=False)]))
+        async with self.sessions() as db:
+            run = await db.get(Run, ready["id"])
+            run.trigger = "manual"
+            row = {**run.document["rows"][0], "status": "blocked", "reasons": ["identity_conflict"]}
+            run.document = {**run.document, "rows": [row]}
+            await db.commit()
+        async with self.sessions() as db:
+            result = await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                selection={"all_filtered": True}, changes={"availability": "SKLADOM", "visibility": True}))
+            self.assertEqual((result["updated"], result["skipped"]), (0, 1))
+            await db.commit()
+            row = (await service.get_run(db, ready["id"]))["rows"][0]
+            self.assertEqual(row["reasons"], ["identity_conflict"])
+            self.assertFalse(row["editable"])
+
+    async def test_unconfirmed_stock_accepts_explicit_label_without_creating_balance(self):
+        ready = await self.ready()
+        self.assertIsNone(await self.snapshot())
+        async with self.sessions() as db:
+            row = (await service.get_run(db, ready["id"]))["rows"][0]
+            self.assertTrue(row["editable"])
+            self.assertEqual(row["reasons"], ["stock_unconfirmed"])
+            edited = await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                selection={"codes": ["RECEIPT-A"]}, changes={"availability": "Na predobjednanie"}))
+            await db.commit()
+        async with self.sessions() as db:
+            await service.export(db, ready["id"], ExportInput(expected_revision=edited["revision"]))
+            await db.commit()
+            row = (await service.get_run(db, ready["id"]))["rows"][0]
+            self.assertIsNone(row["qty_available"])
+            self.assertEqual(row["proposed_availability"], "Na predobjednanie")
+        self.assertIsNone(await self.snapshot())
+
+    async def test_intervening_card_override_invalidates_persistent_preview(self):
+        from inventory_hub.services import availability_catalog
+        await self.stock()
+        ready = await self.ready()
+        async with self.sessions() as db:
+            edit = await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                selection={"codes": ["RECEIPT-A"]}, changes={"availability": "Na predobjednanie", "apply_to_every_export": True}))
+            await db.commit()
+        async with self.sessions() as db:
+            await availability_catalog.apply_product_overrides(db, [{"product_id": self.product_id,
+                "expected_revision": 0, "label": "do 5 dní"}], request_id=str(uuid4()), actor="user:8")
+            await db.commit()
+        with self.assertRaisesRegex(service.ExportError, "stock_changed"):
+            async with self.sessions() as db:
+                await service.export(db, ready["id"], ExportInput(expected_revision=edit["revision"]))
+        async with self.sessions() as db:
+            saved = (await availability_catalog.get_product_overrides(db, [self.product_id]))[self.product_id]
+            self.assertEqual(saved["label"], "do 5 dní")
+            self.assertIsNone((await db.get(Run, ready["id"])).csv_content)
+
+
+    async def test_parent_exclusion_allows_availability_only_change_to_already_visible_child(self):
+        await self.stock()
+        ready = await self.ready(buyers({"PRODUCT_ID": "FAMILY", "VISIBILITY": "0"},
+                                      {"PRODUCT_ID": "RECEIPT-A", "PARENT_ID": "FAMILY", "VISIBILITY": "1"}))
+        async with self.sessions() as db:
+            edit = await service.edit(db, ready["id"], EditInput(request_id=uuid4(), expected_revision=ready["revision"],
+                selection={"codes": ["FAMILY"]}, changes={"include_in_export": False}))
+            await db.commit()
+        async with self.sessions() as db:
+            await service.export(db, ready["id"], ExportInput(expected_revision=edit["revision"]))
+            await db.commit()
+            content, _, _ = await service.download(db, ready["id"])
+        rows = list(csv.reader(io.StringIO(content.decode("utf-8-sig")), delimiter=";"))
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1], ["RECEIPT-A", "FAMILY", "1", "SKLADOM"])

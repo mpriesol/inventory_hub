@@ -226,3 +226,14 @@ Kliknutie na upraviteľný text bunky vrátane názvu spustí editovanie. Enter/
 Kliknutie na hlavičku SKU alebo názvu triedi celý filtrovaný výsledok existujúcim API. Ostatné hlavičky triedia **načítanú stránku**, s viditeľným označením rozsahu a možnosťou zrušiť triedenie. Pri zobrazení všetkých výsledkov do 500 položiek tak triedia celý výsledok. Neznáme ceny a množstvá zostávajú neznáme a posledné v oboch smeroch; číselné stĺpce sa neporovnávajú ako text. Lokálne triedenie dočasne vypne rodinné hlavičky, aby nesprávne nezoskupovalo preusporiadané varianty. Uložené hodnoty sa triedením nemenia.
 
 Serverový kontrakt stále povoľuje iba 25/50/100 riadkov a tri pôvodné zoradenia. Frontend zostaví väčšiu stránku najviac 500 položiek sekvenčnými GET požiadavkami po 100, vrátane správneho posunu pri stránke veľkosti 250. Čiastočné, duplicitné alebo počtom nezhodné výsledky sa nezobrazia ako úplná stránka. Zostáva limit 100 rozpracovaných kariet na jedno uloženie a 100 kariet na párovací náhľad. Backend, zásoby, cenové pravidlá, všeobecné rozloženie webu ani automatika sa touto úpravou nemenia.
+
+### Manual availability overrides
+
+The card overview displays manual availability/visibility with timestamp and
+actor, and allows restoring automatic determination. These values belong to the
+canonical card, not a temporary Atomer preview. See the shared
+[availability dictionary and override contract](availability-sync.md#shared-availability-dictionary-and-manual-card-override).
+The stock list can filter manual overrides across all matching records using
+`availability_override=manual`; imported source facts and physical pieces remain
+separate. An inactive dictionary choice remains visible on an existing card
+until explicitly replaced or cleared.

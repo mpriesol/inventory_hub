@@ -331,6 +331,9 @@ async def desired(db, shop_code, sku, sale_key=''):
     quantity = stock_projection.publication_quantity(row)
     label = 'SKLADOM' if Decimal(quantity) > 0 else (
         offer.get('label', 'do 5 dní') if offer.get('fresh') and offer.get('available') is True else 'overíme')
+    from inventory_hub.services.availability_catalog import get_product_overrides
+    manual = (await get_product_overrides(db, [row['product_id']])).get(row['product_id'], {})
+    label = manual.get('label', label)
     value = {'stock': quantity, 'availability': label, 'can_add_to_basket_yn': True}
     source._fields(value)
     return row['target'], value

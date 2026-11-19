@@ -23,34 +23,55 @@ const find = id => document.querySelector(`[data-testid="${id}"]`);
 const response = (value, status = 200) => ({ ok: status < 400, status, statusText: status === 200 ? 'OK' : 'Conflict',
   headers: { get: () => 'application/json' }, text: async () => JSON.stringify(value), json: async () => value });
 const id = 'c40e9329-dfed-420b-b28c-3c26f95712b5';
-let scans = [], posted = 0, status = 'open', requests = [], failAck = false, malformedAck = false, loseFinalize = false, needsChoice = false, uploadCount = 0, blocked = false;
+let scans = [], posted = 0, status = 'open', requests = [], failAck = false, malformedAck = false, loseFinalize = false, needsChoice = false, uploadCount = 0, blocked = false, loseManual = false, loseArchive = false, archiveCount = 0, openDrafts = [], archived = false, chosenWarehouse = 'main';
 const seen = new Map(), mutations = new Map();
 const candidate = (supplier = 'fixture-two', invoice = 'INV-2') => ({ supplier, supplier_name: supplier, invoice_no: invoice,
   invoice_date: '2026-11-12', session_id: 2, status: 'open', lines: [{ id: 52, line_number: 1, title: 'Synthetic item', ordered_qty: '8', received_qty: '0', remaining_qty: '8', unit_price: '12.50' }] });
 function summary() {
   const active = scans.filter(scan => scan.status === 'active');
-  return { id, status, warehouse_code: 'main', warehouse_name: 'Main test warehouse', created_at: '2026-11-16T12:00:00Z', completed_at: status === 'completed' ? '2026-11-16T12:30:00Z' : null,
+  return { id, status, archived, warehouse_code: 'main', warehouse_name: 'Main test warehouse', created_at: '2026-11-16T12:00:00Z', completed_at: status === 'completed' ? '2026-11-16T12:30:00Z' : null,
     scans: structuredClone(scans), total_qty: String(active.length), blockers: blocked ? [{ code: 'receiving_product_preparation_required', line_id: 51, session_id: 1 }] : [],
-    items: [...new Map(active.map(scan => [`${scan.session_id}:${scan.line_id}`, scan])).values()].map(scan => ({ session_id: scan.session_id, supplier: scan.supplier, invoice_no: scan.invoice_no, line_id: scan.line_id, title: scan.title, qty: '1',
+    items: [...new Map(active.map(scan => [scan.source_kind === 'manual' ? scan.id : `${scan.session_id}:${scan.line_id}`, scan])).values()].map(scan => ({ scan_id: scan.id, source_kind: scan.source_kind, manual_reason: scan.manual_reason, cost_status: scan.cost_status, session_id: scan.session_id, supplier: scan.supplier, invoice_no: scan.invoice_no, line_id: scan.line_id, title: scan.title, qty: '1',
       product_id: blocked ? null : 91, sku: blocked ? null : 'AA-TEST', card_status: blocked ? 'feed_only' : 'matched', can_prepare: blocked, draft_id: null, warnings: [],
       stock_qty_before: '2', stock_qty_after: '3', stock_quantity: '1', stock_unit: 'pcs', stock_confirmed: true,
       shops: [{ code: 'biketrek', name: 'BIKETREK', linked: true, sync_enabled: true, status: status === 'completed' ? 'queued' : 'ready' },
         { code: 'xtrek', name: 'xTrek', linked: false, sync_enabled: false, status: 'unlinked' }] })),
-    invoices: [...new Map(active.map(scan => [scan.invoice_no, { supplier: scan.supplier, invoice_no: scan.invoice_no, session_id: scan.session_id,
+    invoices: [...new Map(active.filter(scan => scan.source_kind !== 'manual').map(scan => [scan.invoice_no, { supplier: scan.supplier, invoice_no: scan.invoice_no, session_id: scan.session_id,
       invoice_date: '2026-11-12', ordered_qty: '8', received_qty: '0', scanned_qty: String(active.filter(x => x.invoice_no === scan.invoice_no).length), complete_after: false }])).values()] };
 }
 global.fetch = async (path, options = {}) => {
   if (path === '/api/suppliers') return response([{ code: 'fixture', name: 'Synthetic supplier' }]);
-  if (path === '/api/receiving/batches?status=open') return response({ batches: [] });
-  if (path === '/api/receiving/batches' && options.method === 'POST') return response(summary());
+  if (path === '/api/invoices/supplier-options') return response([]);
+  if (path === '/api/product-editor/options') return response({ warehouses: [{code:'secondary',name:'Secondary'}, {code:'main',name:'Main',is_default:true}], shops:[], brands:[] });
+  if (path === '/api/receiving/batches?status=open') return response({ batches: openDrafts });
+  if (path === '/api/receiving/batches?status=completed') return response({ batches: [{id, total_qty:'3',warehouse_code:'main',created_at:'2026-11-16T12:00:00Z'}] });
+  if (path === '/api/receiving/batches' && options.method === 'POST') { chosenWarehouse = JSON.parse(options.body).warehouse_code; return response(summary()); }
   if (path === `/api/receiving/batches/${id}`) return response(summary());
   if (path.endsWith('/preview')) return response({ ...summary(), preview_hash: 'a'.repeat(64) });
-  if (path.endsWith('/upload-invoice')) { uploadCount++; return response({ success: true }); }
+  if (path === '/api/invoices/upload') { uploadCount++; return response({ id:2, invoice_number:'INV-2', processing:{status:'complete',parsed_lines:1,stored_lines:1,receiving_ready:true,issues:[],missing_fields:[]} }); }
+  if (path.includes('/manual-product?')) return response({ product_id:91,sku:'AA-TEST',title:'Synthetic manual',stock_unit:'pcs' });
+  if (path.endsWith('/manual-scan')) {
+    const body=JSON.parse(options.body); requests.push(body);
+    const replayed=seen.has(body.request_id);
+    if (!replayed) {
+      const scan = {id:body.request_id,code:body.code,qty:body.qty,source_kind:'manual',supplier:null,supplier_name:null,invoice_no:null,invoice_date:null,session_id:null,line_id:null,line_number:null,
+        title:'Synthetic manual',product_id:91,sku:'AA-TEST',unit_price:body.unit_cost,cost_status:body.cost_status,manual_reason:body.reason,status:'active',alternatives:[]};
+      scans.push(scan);seen.set(body.request_id,scan);
+    }
+    if (loseManual) {loseManual=false;throw new Error('Lost manual acknowledgement');}
+    return response({request_id:body.request_id,scan_id:body.request_id,replayed,summary:summary()});
+  }
+  if (path.endsWith('/archive')) {
+    const body=JSON.parse(options.body); requests.push(body); const replayed=mutations.has(body.request_id);
+    if(!replayed){archiveCount++;mutations.set(body.request_id,body);openDrafts=[];}
+    if(loseArchive){loseArchive=false;throw new Error('Lost archive acknowledgement');}
+    return response({request_id:body.request_id,batch_id:path.split('/').at(-2),archived:true,replayed});
+  }
   if (path.endsWith('/products/prepare')) return response({ draft_id: 'draft-1', created: true });
   if (path.endsWith('/scan')) {
     const body = JSON.parse(options.body); requests.push(body);
     if (body.code === 'LEGACY') return response({ detail: { code: 'mixed_receiving_legacy_pending', candidates: [candidate('fixture', 'OLD-1')] } }, 409);
-    if (body.code === 'NO-INVOICE' && !uploadCount) return response({ detail: { code: 'mixed_receiving_invoice_missing', candidates: [] } }, 409);
+    if ((body.code === 'NO-INVOICE' && !uploadCount) || body.code === 'MANUAL') return response({ detail: { code: 'mixed_receiving_invoice_missing', candidates: [] } }, 409);
     if (needsChoice && !body.invoice_no) return response({ detail: { code: 'mixed_receiving_invoice_choice', candidates: [candidate()] } }, 409);
     let replayed = seen.has(body.request_id);
     if (!replayed) {
@@ -97,7 +118,13 @@ async function scan(code) {
   await click('mixed-scan');
 }
 (async () => {
-  await mount(); await click('mixed-start');
+  await mount();
+  assert(find('mixed-upload-open'), 'Upload available before starting a receipt');
+  assert.equal(find('mixed-warehouse').value, 'main', 'Configured default wins over warehouse order');
+  await act(async()=>{find('mixed-warehouse').value='secondary';find('mixed-warehouse').dispatchEvent(new dom.window.Event('change',{bubbles:true}));await tick();});
+  await click('mixed-start'); assert.equal(chosenWarehouse,'secondary');
+  assert.equal(find('mixed-code').getAttribute('type'),'text');
+  assert.equal(document.activeElement,find('mixed-code'),'Starting receipt focuses EAN input');
   assert.equal(location.search, '?batch=' + id);
   await scan('FIRST'); await scan('SECOND'); await scan('FIRST');
   assert.equal(scans.length, 3); assert.equal(new Set(scans.map(scan => scan.id)).size, 3, 'Every physical piece has its own UUID');
@@ -121,14 +148,18 @@ async function scan(code) {
   await click('mixed-invoice-choice');
   assert.equal(requests.at(-1).request_id, choiceRequest.request_id, 'Explicit rejected choice keeps the scan UUID');
   assert.equal(requests.at(-1).invoice_no, 'INV-2'); needsChoice = false;
-  await scan('NO-INVOICE'); assert(find('mixed-upload')); const missingRequest = requests.at(-1);
+  await scan('NO-INVOICE'); assert(find('mixed-missing-invoice')); const missingRequest = requests.at(-1); await click('mixed-upload-open');
   await act(async () => {
-    const select = find('mixed-upload-supplier'); select.value = 'fixture'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick();
+    const select = find('upload-supplier'); select.value = 'fixture'; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick();
   });
   await act(async () => {
-    const input = find('mixed-upload-file'); Object.defineProperty(input, 'files', { value: [new File(['synthetic'], 'fixture.pdf', { type: 'application/pdf' })], configurable: true });
+    const input = find('invoice-upload-file'); Object.defineProperty(input, 'files', { value: [new File(['synthetic'], 'fixture.pdf', { type: 'application/pdf' })], configurable: true });
     input.dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); await tick();
   });
+  await click('invoice-upload-save');
+  assert(find('invoice-upload-result'), 'Processing feedback remains in modal');
+  assert.equal(location.search, '?batch='+id, 'Upload never leaves receiving');
+  await click('invoice-upload-close'); assert.equal(document.activeElement,find('mixed-code'));
   assert.equal(uploadCount, 1); assert.equal(requests.at(-1).request_id, missingRequest.request_id, 'Upload retries the rejected scan without losing its operation identity');
   const reassignment = [...document.querySelectorAll('button')].find(button => button.textContent.includes(i18n.t('receiving.mixed.changeInvoice')));
   await act(async () => { reassignment.click(); await tick(); });
@@ -138,7 +169,20 @@ async function scan(code) {
   await click('mixed-cancel-scan');
   assert.equal(scans.filter(scan => scan.status === 'active').length, beforeCancel - 1, 'Cancel removes only the staged piece');
   assert.equal(posted, 0);
+  await scan('MANUAL'); await click('mixed-manual-open');
+  assert(find('mixed-manual-form')); assert(find('mixed-manual-confirm').disabled,'Manual reason is required');
+  await act(async()=>{const input=find('mixed-manual-reason');Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value').set.call(input,'Delivery without invoice');input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));await tick();});
+  const beforeStorageFailure=requests.length, originalStorage=dom.window.Storage.prototype.setItem;
+  dom.window.Storage.prototype.setItem=function(key,value){if(key.startsWith('receiving-batch-command:'))return;return originalStorage.call(this,key,value);};
+  await click('mixed-manual-confirm'); assert.equal(requests.length,beforeStorageFailure,'Unavailable recovery storage prevents a new manual mutation');
+  dom.window.Storage.prototype.setItem=originalStorage;
+  loseManual=true; await click('mixed-manual-confirm'); const manualRequest=requests.at(-1); const manualCount=scans.length;
+  assert.equal(manualRequest.unit_cost,null,'Unknown cost remains null'); assert.equal(manualRequest.confirmed_without_invoice,true);
+  assert(find('mixed-retry-operation')); await mount('/receiving?batch='+id); await click('mixed-retry-operation');
+  assert.deepEqual(requests.at(-1),manualRequest); assert.equal(scans.length,manualCount,'Manual retry cannot duplicate the physical item');
+  assert.equal(posted,0,'Manual staging does not post stock');
   await click('mixed-preview');
+  assert(document.body.textContent.includes(i18n.t('receiving.mixed.withoutInvoice')));
   assert(find('mixed-summary')); assert.equal(posted, 0); assert(find('mixed-confirm'));
   assert(document.body.textContent.includes('BIKETREK')); assert(document.body.textContent.includes('xTrek'));
   assert(document.body.textContent.includes(i18n.t('receiving.mixed.shopStatus.unlinked')));
@@ -152,6 +196,14 @@ async function scan(code) {
   assert(find('mixed-confirm').disabled, 'Missing cards block final posting');
   await click('mixed-prepare-card');
   assert(find('prepared-product')); assert(location.search.includes('receiving_batch=' + id), 'Preparation retains return-to-batch context');
+
+  blocked=false; scans=[]; openDrafts=[{id,total_qty:'0',scan_count:0,warehouse_code:'main',created_at:'2026-11-16T12:00:00Z'}];
+  await mount(); loseArchive=true; await click('mixed-remove-batch'); const archiveRequest=requests.at(-1);
+  assert(find('mixed-retry-operation')); await mount(); await click('mixed-retry-operation');
+  assert.deepEqual(requests.at(-1),archiveRequest); assert.equal(archiveCount,1); assert(!find('mixed-remove-batch'));
+  await click('mixed-history'); assert(find('mixed-history-list')); assert.equal(location.pathname,'/receiving','Viewing receipt history retains receiving context');
+  archived=true; await mount('/receiving?batch='+id); assert(!find('mixed-code')); assert(!find('mixed-confirm')); assert(!find('mixed-atomer'));
+  assert(document.body.textContent.includes(i18n.t('receiving.mixed.archivedReceipt')),'An archived draft is not called a completed physical receipt'); archived=false;
 
   // The camera reports a usable fallback without requesting an insecure media stream.
   await act(async () => { root.render(React.createElement(BarcodeCamera, { onScan: () => { throw new Error('No scan expected'); } })); await tick(); });

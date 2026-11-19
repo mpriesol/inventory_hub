@@ -23,7 +23,7 @@
 .receiving-code-form { margin-top: 20px; }
 .receiving-code-form label { display: block; font-weight: 500; margin-bottom: 7px; }
 .receiving-code-form > div { display: flex; gap: 10px; }
-.receiving-code-form input { min-width: 0; flex: 1; font-size: 1rem; min-height: 46px; }
+.receiving-code-form input { min-width: 0; flex: 1; font-size: 1rem; min-height: 46px; padding: 10px 12px; }
 .receiving-last-scan { display: flex; gap: 12px; margin-top: 16px; padding: 14px; background: var(--color-success-subtle); border-radius: 10px; }
 .receiving-last-scan > svg { flex-shrink: 0; margin-top: 3px; color: var(--color-success); }
 .receiving-open-list { margin-top: 24px; }
@@ -63,3 +63,10 @@
   .receiving-invoice-progress strong { grid-column: 1 / -1; margin-left: 0; }
   .receiving-camera-controls button { min-height: 44px; }
 }
+
+.receiving-header-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.receiving-open-row { display: flex; align-items: center; gap: 14px; }
+.receiving-open-row .receiving-open-batch { flex: 1; }
+.receiving-manual-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 18px 0; }
+.receiving-manual-fields label { display: flex; flex-direction: column; gap: 6px; }
+.receiving-manual-fields input, .receiving-manual-fields select { width: 100%; margin: 0; }

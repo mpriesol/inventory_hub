@@ -60,6 +60,8 @@ MIGRATIONS = (
     "attention_migrate",             # 053; shared incidents/rules, no business writes
     "mixed_receiving_migrate",       # 054; mixed receipt batches, no automatic stock writes
     "atomer_availability_migrate",   # 055; CSV previews/exports, no remote shop writes
+    "receiving_manual_migrate",      # 056; explicit manual receipts and reversible draft archival
+    "setting_catalogs_migrate",      # 057; shared dictionaries, no stock authority changes
 )
 
 

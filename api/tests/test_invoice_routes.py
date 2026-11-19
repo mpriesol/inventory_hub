@@ -2,7 +2,7 @@
 from contextlib import ExitStack
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 
 from fastapi import FastAPI
@@ -13,7 +13,9 @@ from inventory_hub.database import get_session
 from inventory_hub.routers import invoice_archive as archive_routes
 from inventory_hub.routers import invoices_unified as routes
 from inventory_hub.routers import shop_invoice_sync as shop_routes
+from inventory_hub.routers import suppliers
 from inventory_hub.services import invoice_archive as archive
+from inventory_hub.services import invoice_upload
 from inventory_hub.services import invoice_finance as finance
 from inventory_hub.services import invoice_processing as processing
 from inventory_hub.services import shop_invoice_sync
@@ -34,6 +36,7 @@ class InvoiceRouteTests(unittest.TestCase):
         app.include_router(archive_routes.router)
         app.include_router(routes.router)
         app.include_router(shop_routes.router)
+        app.include_router(suppliers.router)
         app.dependency_overrides[get_session] = session
         self.client = TestClient(app)
         self.addCleanup(self.client.close)
@@ -90,6 +93,10 @@ class InvoiceRouteTests(unittest.TestCase):
                                       files={"file": ("fixture.pdf", b"synthetic invoice", "application/pdf")})
             self.assertEqual(upload.status_code, 401)
             self.assertEqual(upload.headers["cache-control"], "no-store")
+            legacy_upload = self.client.post('/suppliers/archive-fixture/upload-invoice',
+                files={'file': ('fixture.pdf', b'synthetic invoice', 'application/pdf')})
+            self.assertEqual(legacy_upload.status_code, 401)
+            self.assertEqual(legacy_upload.headers['cache-control'], 'no-store')
             self.assertEqual(self.sessions, [])
             self.db.execute.assert_not_awaited()
             for action in calls:
@@ -253,7 +260,13 @@ class InvoiceRouteTests(unittest.TestCase):
                 action.assert_not_awaited()
 
     def test_upload_uses_source_lines_and_rejects_conflicting_manual_invoice_number(self):
-        self.db.scalar.return_value = SimpleNamespace(id=2, code='sk-profi-bike')
+        self.db.scalar.return_value = None
+        self.db.execute.return_value = Mock()
+        self.db.execute.return_value.mappings.return_value.first.return_value = {
+            'archived_at': None, 'processing_status': 'unprocessed'}
+        self.enterContext(patch.object(archive, 'resolve_supplier',
+            AsyncMock(return_value=SimpleNamespace(id=2, code='sk-profi-bike'))))
+        self.enterContext(patch.object(invoice_upload, 'save_receiving_invoice', return_value={'csv_path': 'synthetic.csv'}))
         header = {'invoice_number': '2026/1', 'currency': 'EUR', 'total_with_vat': '12.30'}
         lines = [{'line_number': 1, 'quantity': '1', 'ean': '5901234123457'}]
         with patch.object(archive, 'parse_uploaded_document', return_value=(header.copy(), lines)), \
@@ -271,3 +284,19 @@ class InvoiceRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422, response.text)
             self.assertEqual(response.json()['detail']['code'], 'invoice_source_metadata_conflict')
             ingest.assert_not_awaited()
+
+    def test_canonical_and_legacy_upload_delegate_same_source(self):
+        source = b'%PDF-1.4\nSynthetic upload\n%%EOF'
+        result = {'id': 7, 'archive': {'status': 'completed'}, 'processing': {'status': 'partial'}}
+        with patch.object(invoice_upload, 'upload', AsyncMock(return_value=result)) as upload:
+            canonical = self.client.post('/invoices/upload', headers=self.headers,
+                data={'supplier_code': 'synthetic', 'invoice_number': 'INV-1'},
+                files={'file': ('original.pdf', source)})
+            legacy = self.client.post('/suppliers/synthetic/upload-invoice', headers=self.headers,
+                params={'invoice_number': 'INV-1'}, files={'file': ('original.pdf', source)})
+        self.assertEqual((canonical.status_code, legacy.status_code), (200, 200))
+        self.assertEqual(canonical.json(), legacy.json())
+        self.assertEqual(upload.await_args_list[0], upload.await_args_list[1])
+        self.assertEqual(upload.await_args.kwargs['content'], source)
+        self.assertEqual(upload.await_args.kwargs['supplier_code'], 'synthetic')
+        self.assertEqual(upload.await_args.kwargs['invoice_number'], 'INV-1')

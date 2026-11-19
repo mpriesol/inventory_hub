@@ -1,3 +1,4 @@
+import { CatalogSettingsPanel } from '../components/settings/CatalogSettingsPanel';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -141,6 +142,7 @@ export function StockSettingsPage() {
       <p>{t('stockSettings.tokenHelp')}</p><label>{t('stockSettings.token')}<input data-testid="unlock-token" type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} /></label>
       <Button data-testid="unlock" type="submit" disabled={!token.trim()}>{t('stockSettings.unlock')}</Button>
     </form> : <>
+      <CatalogSettingsPanel key={revision} kind="warehouses" disabled={writing || !!uncertain} onChanged={() => setOptionsStale(true)} />
       <section className="opening-stock-panel"><div className="opening-stock-actions"><label>{t('stockSettings.shop')}<select data-testid="shop" value={shop} disabled={writing} onChange={event => { reset(); setShop(event.target.value); }}><option value="biketrek">BIKETREK</option><option value="xtrek">xTrek</option></select></label>
         <span className="action-control"><Button data-testid="load-options" variant="secondary" disabled={!!busy} onClick={loadOptions}>{t('stockSettings.loadOptions')}</Button><ActionScope effects={['hub-read']} /></span></div>
         <p><Link to={`/orders/inbox?shop=${encodeURIComponent(shop)}`}>{t('orderCollection.open')}</Link> · <Link to={`/orders/stock?shop=${encodeURIComponent(shop)}`}>{t('stockSettings.policyLink')}</Link></p>

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Request, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
-from inventory_hub.mixed_receiving_types import BatchCreate, BatchScan, BatchAssign, BatchCancel, BatchFinalize
+from inventory_hub.mixed_receiving_types import BatchCreate, BatchScan, BatchAssign, BatchCancel, BatchFinalize, BatchArchive, BatchManualScan
 from inventory_hub.routers.product_editor import NoStoreRoute
 from inventory_hub.services import mixed_receiving as service
 
@@ -34,6 +34,27 @@ async def summary(batch_id: UUID, db: AsyncSession = Depends(get_session)):
 @router.post('/{batch_id}/scan')
 async def scan(batch_id: UUID, body: BatchScan, request: Request, db: AsyncSession = Depends(get_session)):
     return await service.scan(db, batch_id, body, actor=actor(request))
+
+
+@router.get('/{batch_id}/manual-product')
+async def manual_product(batch_id: UUID, code: str = Query(min_length=1, max_length=100, pattern=r'\S'),
+                         db: AsyncSession = Depends(get_session)):
+    return await service.manual_product(db, batch_id, code)
+
+
+@router.post('/{batch_id}/manual-scan')
+async def manual_scan(batch_id: UUID, body: BatchManualScan, request: Request, db: AsyncSession = Depends(get_session)):
+    return await service.manual_scan(db, batch_id, body, actor=actor(request))
+
+
+@router.post('/{batch_id}/archive')
+async def archive(batch_id: UUID, body: BatchArchive, request: Request, db: AsyncSession = Depends(get_session)):
+    return await service.archive(db, batch_id, body, actor=actor(request))
+
+
+@router.post('/{batch_id}/restore')
+async def restore(batch_id: UUID, body: BatchArchive, request: Request, db: AsyncSession = Depends(get_session)):
+    return await service.archive(db, batch_id, body, actor=actor(request), restore=True)
 
 
 @router.post('/{batch_id}/scans/{scan_id}/reassign')

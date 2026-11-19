@@ -74,7 +74,7 @@ const stats = direction => ({ direction, total_invoices: 4, unpaid_count: 2, ove
   aging: [{ bucket: '1_30', currency: 'EUR', outstanding_amount: '100.00', invoice_count: 1 }],
 });
 let paymentMode = 'success', hideRecovery = false, downloadFail = false, deferredList = false, releaseList;
-let shopSyncMode = 'success';
+let shopSyncMode = 'success', uploadNumberRequired = false;
 let processingMode = 'success';
 let processingPreviewMode = 'valid', processingAckMode = 'valid', paymentAckMode = 'valid';
 let paymentCounter = 100;
@@ -119,7 +119,7 @@ global.fetch = async (path, init = {}) => {
   const body = init.body && typeof init.body === 'string' ? JSON.parse(init.body) : init.body;
   calls.push({ path, method: init.method || 'GET', body: clone(body || null) });
   const url = new URL(path, dom.window.location.href);
-  if (url.pathname === '/api/suppliers') return reply([{ code: 'fixture-vendor', name: 'Fixture vendor' }]);
+  if (url.pathname === '/api/suppliers') return reply([{ code: 'fixture-vendor', name: 'Fixture vendor' }, { code:'northfinder',name:'Northfinder' }]);
   if (url.pathname === '/api/invoices/supplier-options') return reply([{ code: 'retired-vendor', name: 'Archived inactive vendor' }]);
   if (url.pathname === '/api/invoices/archive-status') return reply({ items: [{ supplier_code: 'fixture-vendor', status: 'attention', scanned: 100, conflicts: [{ source_key: 'BAD-1', code: 'invoice_index_ambiguous' }], uploads: [] }] });
   if (url.pathname === '/api/invoices/calendar') return reply({
@@ -128,8 +128,9 @@ global.fetch = async (path, init = {}) => {
   });
   if (url.pathname === '/api/invoices/upload') {
     assert(body instanceof FormData);
-    uploadedFiles.push({ file: body.get('file'), supplier: body.get('supplier_code') });
-    return reply({ id: 20, invoice_number: null });
+    if (uploadNumberRequired && !body.get('invoice_number')) return failure(422,'invoice_number_required_for_receiving');
+    uploadedFiles.push({ file: body.get('file'), supplier: body.get('supplier_code'), invoice_number:body.get('invoice_number') });
+    return reply({ id:20,invoice_number:body.get('invoice_number'),processing:{status:'partial',parsed_lines:0,stored_lines:0,receiving_ready:false,issues:['invoice_parser_unavailable'],missing_fields:['invoice_number']} });
   }
   if (url.pathname === '/api/product-editor/options') return reply({ shops: [{ code: 'biketrek', name: 'BIKETREK' }] });
   if (url.pathname === '/api/invoices/stats') return reply({ ...stats(url.searchParams.get('direction')), include_archived: url.searchParams.get('include_archived') === 'true' });
@@ -282,8 +283,12 @@ global.fetch = async (path, init = {}) => {
   assert.equal(calls.filter(call => call.path === '/api/invoices/upload').length, uploadsBefore, 'Dropping never submits automatically');
   await click('invoice-upload-save');
   assert.equal(uploadedFiles.length, 1); assert.equal(uploadedFiles[0].file.name, 'invoice-scan.png'); assert.equal(uploadedFiles[0].supplier, 'fixture-vendor');
-  assert(!element('invoice-upload-form'), 'Successful original upload closes the form');
-  assert(!element('invoice-dropzone')); await click('invoice-upload-open');
+  assert(element('invoice-upload-form'), 'Processing feedback stays inside the modal');
+  assert(element('invoice-upload-result').textContent.includes(i18n.t('invoiceUpload.results.partial')));
+  assert.equal(document.querySelector('[role="dialog"]').getAttribute('aria-modal'),'true');
+  assert.equal(document.querySelector('[data-testid="invoice-upload-result"] a').getAttribute('target'),'_blank','Analysis links preserve current workflow');
+  assert.equal(router.state.location.pathname,'/invoices');
+  await click('invoice-upload-close'); assert(!element('invoice-dropzone')); await click('invoice-upload-open');
   await dropFiles([new File(['bad'], 'unsupported.exe')]);
   assert(element('invoice-upload-error')); assert(required('invoice-upload-save').disabled);
   assert.equal(uploadedFiles.length, 1, 'Invalid dropped formats never reach the upload API');
@@ -297,6 +302,26 @@ global.fetch = async (path, init = {}) => {
   assert.equal(required('invoice-selected-file').textContent, 'chosen-scan.pdf', 'File chooser shares the same validation and original retention flow');
   assert(!element('invoice-upload-error'));
   assert.equal(calls.filter(call => call.path === '/api/invoices/reconcile').length, 0, 'The invoice UI never needs manual indexing');
+  await input('upload-supplier','northfinder');
+  const spreadsheet = new File(['synthetic XLS'], 'delivery.xlsx');
+  await dropFiles([spreadsheet]);
+  assert(required('invoice-upload-metadata').open,'Northfinder spreadsheet exposes invoice metadata');
+  uploadNumberRequired=true;
+  const previousUploads=uploadedFiles.length;
+  required('invoice-upload-metadata').open=false;
+  await click('invoice-upload-save');
+  assert(required('invoice-upload-metadata').open,'Missing number response opens the metadata section');
+  assert(required('invoice-upload-error').textContent.includes(i18n.t('invoiceArchive.errors.invoice_number_required_for_receiving')));
+  assert.equal(uploadedFiles.length,previousUploads,'Required metadata rejection does not claim original persistence');
+  assert(!element('invoice-upload-result'));
+  assert.equal(required('invoice-selected-file').textContent,'delivery.xlsx','Rejected upload keeps the original selection');
+  assert(!required('invoice-upload-save').disabled,'A server error does not dead-end retry');
+  await input('upload-invoice-number','NF-TEST-77'); assert(!element('invoice-upload-error'));
+  await click('invoice-upload-save');
+  assert.equal(uploadedFiles.length,previousUploads+1);assert.equal(uploadedFiles.at(-1).invoice_number,'NF-TEST-77');
+  assert.equal(uploadedFiles.at(-1).file.name,'delivery.xlsx');
+  assert(element('invoice-upload-result')); uploadNumberRequired=false;
+  await click('invoice-upload-close');
   await click('invoice-calendar-toggle');
   await click('invoice-direction-sale'); assert(element('invoice-row-13')); assert(!element('invoice-upload-open'));
   assert(!element('invoice-calendar-toggle')); assert(!element('calendar-main-grid'), 'Shop invoices do not display the due calendar');

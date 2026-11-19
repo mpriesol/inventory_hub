@@ -1,6 +1,7 @@
 """Bounded export-only configuration and one-preview overrides."""
 
 from uuid import UUID
+from typing import Literal
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -9,6 +10,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     field_validator,
+    model_validator,
 )
 from inventory_hub.services.atomer_availability_source import safe_text
 
@@ -73,6 +75,8 @@ class RunInput(Input):
 class Override(Input):
     code: StrictStr = Field(min_length=1, max_length=255)
     visibility: StrictBool | None = None
+    include_in_export: StrictBool | None = None
+    apply_to_every_export: StrictBool | None = None
     availability: StrictStr | None = Field(default=None, min_length=1, max_length=100)
 
     @field_validator("code", "availability")
@@ -93,3 +97,58 @@ class ExportInput(Input):
         if len({v.code for v in value}) != len(value):
             raise ValueError("Duplicate override code")
         return value
+
+
+class RowFilter(Input):
+    view: Literal["all", "changes", "issues"] = "all"
+    search: StrictStr = Field(default="", max_length=255)
+    kind: Literal["all", "parent", "variant", "standalone"] = "all"
+    status: Literal["all", "changed", "unchanged", "context", "blocked", "unmatched"] = "all"
+    visibility: Literal["all", "visible", "hidden", "unknown"] = "all"
+    current_visibility: Literal["all", "visible", "hidden", "unknown"] = "all"
+    proposed_visibility: Literal["all", "visible", "hidden", "unknown"] = "all"
+    availability: StrictStr | None = Field(default=None, max_length=100)
+    current_availability: StrictStr | None = Field(default=None, max_length=100)
+    proposed_availability: StrictStr | None = Field(default=None, max_length=100)
+    include_in_export: StrictBool | None = None
+    manual_override: StrictBool | None = None
+
+
+class Selection(Input):
+    codes: list[StrictStr] = Field(default_factory=list, max_length=5000)
+    all_filtered: StrictBool = False
+    filter: RowFilter = Field(default_factory=RowFilter)
+    excluded_codes: list[StrictStr] = Field(default_factory=list, max_length=5000)
+
+    @model_validator(mode="after")
+    def scope(self):
+        if self.all_filtered == bool(self.codes):
+            raise ValueError("Choose explicit codes or the complete filtered result")
+        for values in (self.codes, self.excluded_codes):
+            if len(values) != len(set(values)) or any(not safe_text(v) or not v for v in values):
+                raise ValueError("Use unique exact catalog codes")
+        return self
+
+
+class Changes(Input):
+    visibility: StrictBool | None = None
+    availability: StrictStr | None = Field(default=None, min_length=1, max_length=100)
+    include_in_export: StrictBool | None = None
+    apply_to_every_export: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def nonempty(self):
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("Choose at least one change")
+        if self.availability is not None and (
+            not safe_text(self.availability, 100) or self.availability != self.availability.strip()
+        ):
+            raise ValueError("Use a registered literal availability")
+        return self
+
+
+class EditInput(Input):
+    request_id: UUID
+    expected_revision: StrictInt = Field(ge=1)
+    selection: Selection
+    changes: Changes

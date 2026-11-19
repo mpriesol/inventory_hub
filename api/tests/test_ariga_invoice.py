@@ -10,11 +10,14 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from inventory_hub import config_io
 from inventory_hub.adapters import ariga_invoice as adapter
+from inventory_hub.database import get_session
 from inventory_hub.routers import receiving_db, suppliers
 from inventory_hub.services import invoice_archive, receiving_source
+from inventory_hub.settings import settings
 
 
 def invoice_text():
@@ -91,8 +94,18 @@ class ArigaWorkflowTests(unittest.TestCase):
         self.enterContext(patch.object(config_io, 'DATA_ROOT', self.root))
         self.enterContext(patch.object(suppliers, 'DATA_ROOT', self.root))
         self.enterContext(patch.object(invoice_archive.settings, 'INVENTORY_DATA_ROOT', self.root))
-        self.archive = self.enterContext(patch.object(invoice_archive, 'archive_after_upload',
-            AsyncMock(return_value={'status': 'completed'})))
+        self.db = AsyncMock()
+        self.db.scalar.return_value = None
+        self.db.execute.return_value = Mock()
+        self.db.execute.return_value.mappings.return_value.first.return_value = {
+            'archived_at': None, 'processing_status': 'unprocessed'}
+        self.enterContext(patch.object(invoice_archive, 'resolve_supplier',
+            AsyncMock(return_value=SimpleNamespace(id=1, code='ariga'))))
+        self.archive = self.enterContext(patch.object(invoice_archive, 'ingest_invoice',
+            AsyncMock(return_value={'id': 7, 'replayed': False, 'lines_count': 2})))
+        token = 'invoice-ariga-fixture-' + 'x' * 32
+        self.enterContext(patch.object(settings, 'AI_CONTENT_ACCESS_TOKEN', SecretStr(token)))
+        self.headers = {'Authorization': 'Bearer ' + token}
         cfg = self.root / 'suppliers/ariga/config.json'
         cfg.parent.mkdir(parents=True)
         cfg.write_text('{"code":"ariga","name":"ARIGA","adapter_settings":{"vat_rate":23}}')
@@ -100,11 +113,14 @@ class ArigaWorkflowTests(unittest.TestCase):
         self.parser = self.enterContext(patch.object(adapter, 'parse_invoice_pdf', return_value=self.invoice))
         app = FastAPI()
         app.include_router(suppliers.router)
+        async def session():
+            yield self.db
+        app.dependency_overrides[get_session] = session
         self.client = self.enterContext(TestClient(app))
 
     def upload(self, **kwargs):
         return self.client.post('/suppliers/ariga/upload-invoice',
-            files={'file': ('synthetic.pdf', b'%PDF-synthetic', 'application/pdf')}, **kwargs)
+            files={'file': ('synthetic.pdf', b'%PDF-synthetic', 'application/pdf')}, headers=self.headers, **kwargs)
 
     def test_upload_replay_archive_and_verified_receiving_source(self):
         response = self.upload()
@@ -145,12 +161,20 @@ class ArigaWorkflowTests(unittest.TestCase):
         value = invoice_text().replace('3,21', '4,21').replace('33,56', '34,56')
         self.parser.return_value = adapter.parse_invoice_text(value)
         self.assertNotEqual(self.invoice.fingerprint(), self.parser.return_value.fingerprint())
-        self.assertEqual(self.upload().status_code, 409)
+        response = self.upload()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['processing']['issues'], ['invoice_receiving_preparation_conflict'])
+        self.assertFalse(response.json()['processing']['receiving_ready'])
 
     def test_invalid_upload_cannot_create_receiving_source(self):
         self.assertEqual(self.upload(params={'invoice_number': 'WRONG'}).status_code, 422)
+        self.archive.assert_not_awaited()
         self.parser.side_effect = adapter.InvoiceParseError('Unsupported document')
-        self.assertEqual(self.upload().status_code, 422)
+        response = self.upload()
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['processing']['issues'], ['invoice_parse_failed'])
+        self.assertEqual(self.archive.await_args.kwargs['files'][0]['content'], b'%PDF-synthetic')
+        self.assertEqual(self.archive.await_args.kwargs['lines'], [])
         self.assertFalse((self.root / 'suppliers/ariga/invoices').exists())
         self.assertEqual(invoice_archive.parse_uploaded_document('ariga', 'invoice.pdf', b'%PDF-synthetic'),
                          ({'parse_error': 'invoice_parse_failed'}, []))

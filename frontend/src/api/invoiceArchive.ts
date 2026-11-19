@@ -87,7 +87,12 @@ export const getArchivedInvoice = (id: number, signal?: AbortSignal) => hubReque
 export const getInvoiceArchiveStats = (direction: InvoiceDirection, signal?: AbortSignal, includeArchived = false) =>
   hubRequest<InvoiceArchiveStats>(`${base}/stats?direction=${direction}${includeArchived ? '&include_archived=true' : ''}`, undefined, signal);
 export const getArchiveShops = (signal?: AbortSignal) => hubRequest<{ shops: { code: string; name: string }[] }>('/api/product-editor/options', undefined, signal);
-export const uploadArchivedInvoice = (body: FormData) => hubUpload<{ id: number; invoice_number: string | null }>(`${base}/upload`, body);
+export interface InvoiceUploadResult {
+  id: number; invoice_number: string | null;
+  processing?: { status: 'complete' | 'partial'; parsed_lines: number; stored_lines: number;
+    receiving_ready: boolean; issues: string[]; missing_fields: string[] };
+}
+export const uploadArchivedInvoice = (body: FormData) => hubUpload<InvoiceUploadResult>(`${base}/upload`, body);
 export async function getArchiveSuppliers(signal?: AbortSignal): Promise<{ code: string; name: string }[]> {
   const value = await hubRequest<{ code: string; name: string }[] | { suppliers?: { code: string; name: string }[]; items?: { code: string; name: string }[] }>('/api/suppliers', undefined, signal);
   return Array.isArray(value) ? value : value.suppliers || value.items || [];

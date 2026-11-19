@@ -1,0 +1,8 @@
+.invoice-upload-overlay { position: fixed; inset: 0; z-index: 70; display: flex; align-items: flex-start; justify-content: center; padding: 5vh 16px; overflow-y: auto; }
+.invoice-upload-backdrop { position: fixed; inset: 0; background: #0009; }
+.invoice-upload-dialog { position: relative; width: min(100%, 760px); max-height: 90vh; overflow-y: auto; color: var(--color-text-primary); }
+.invoice-upload-dialog > header { margin-bottom: 12px; }
+.invoice-upload-dialog > header h2 { margin: 0; }
+.invoice-upload-dialog .invoice-dropzone { margin-top: 16px; }
+.invoice-upload-dialog details { margin-top: 16px; }
+@media(max-width: 600px) { .invoice-upload-overlay { padding: 0; } .invoice-upload-dialog.panel { min-height: 100dvh; max-height: 100dvh; border-radius: 0; } }

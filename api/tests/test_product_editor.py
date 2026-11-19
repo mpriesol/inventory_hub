@@ -315,15 +315,25 @@ class ProductEditorProtectedRouteTests(TestCase):
                 self.assertEqual(response.json(), {"ok": name})
                 self.assertEqual(response.headers["cache-control"], "no-store")
             methods["list_products"].assert_awaited_once_with(self.db, q="diel", brand=None, shop_code=None,
-                warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc", stock_scope="all", activity="all", supplier_link="all")
+                warehouse_code="central", page=1, page_size=25, sort="sku", direction="asc", stock_scope="all", activity="all", supplier_link="all",
+                availability_override="all")
             methods["card_detail"].assert_awaited_once_with(self.db, 12, warehouse_code="central")
             methods["detail_by_sku"].assert_awaited_once_with(self.db, "OLD-SKU", warehouse_code="central")
             self.assertIsInstance(methods["save"].await_args.args[1], ProductEditorSaveRequest)
+            for value in ("manual", "automatic"):
+                methods["list_products"].reset_mock()
+                response = self.client.get('/product-editor/products', params={'availability_override': value},
+                    headers=self.headers)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.headers['cache-control'], 'no-store')
+                methods["list_products"].assert_awaited_once()
+                self.assertEqual(methods["list_products"].await_args.kwargs['availability_override'], value)
 
     def test_invalid_top_level_requests_never_echo_values_or_reach_business_operations(self):
         secret = "PRIVATE-INPUT"
         invalid = [("GET", "/product-editor/products?activity=" + secret, None),
                    ("GET", "/product-editor/products?supplier_link=" + secret, None),
+                   ("GET", "/product-editor/products?availability_override=" + secret, None),
                    ("POST", "/product-editor/products", {"request_id": str(uuid4()), "sku": "LOCAL", "name": "Card", "is_active": "false"}),
                    ("POST", "/product-editor/save", save_body(confirmed=1)),
                    ("POST", "/product-editor/save", save_body(extra=secret)),

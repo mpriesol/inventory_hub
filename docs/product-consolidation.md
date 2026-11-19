@@ -452,11 +452,13 @@ normalized inheritance state retained by an editor reset. The full original row
 hash remains in the dependency inventory, with a separate
 `preserved_empty_editor_overrides` proof; its row, revision and audit are never
 deleted, moved or changed. A projection of null common/variant/shop fields is
-insufficient: warehouse settings, publication receipts, unknown keys, null or
+insufficient: manual availability/visibility, warehouse settings, publication receipts, unknown keys, null or
 malformed documents and every nonempty value still block a duplicate. Existing
 Product locks and the required retired-reference trigger fence concurrent
 writers, and any row drift invalidates the preview. Other duplicate supplier,
 editor or SKU dependencies still require a later supported design.
+Completed dictionary/warehouse save receipts remain read-only history: a label
+or warehouse code matching a product SKU does not create a pending product operation.
 
 The dependency inventory reads the installed PostgreSQL catalog. Unknown
 nonempty product references, missing required tables, missing or disabled

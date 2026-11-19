@@ -6,8 +6,6 @@ Upload → Save file + DB record → List in /invoices
 receiving_sessions is created only when "Príjem" workflow starts.
 """
 from __future__ import annotations
-import asyncio
-import os
 import re
 from pathlib import Path
 from datetime import datetime, date
@@ -56,9 +54,6 @@ router = APIRouter(prefix="/invoices", tags=["Invoice Management"], route_class=
 # ============================================================================
 
 from inventory_hub.settings import settings
-
-INVOICE_STORAGE_BASE = Path(settings.INVENTORY_DATA_ROOT) / "suppliers"
-ALLOWED_EXTENSIONS = {'.pdf', '.csv', '.tsv', '.xlsx', '.xls', '.doc', '.docx', '.xml', '.txt', '.jpg', '.jpeg', '.png'}
 
 # ============================================================================
 # Pydantic Models
@@ -109,45 +104,6 @@ class PaymentUpdateRequest(BaseModel):
     payment_status: PaymentStatus
     paid_amount: Optional[Decimal] = None
     paid_at: Optional[datetime] = None
-
-
-# ============================================================================
-# Helper Functions
-# ============================================================================
-
-def _sanitize_filename(filename: str) -> str:
-    """Sanitize filename for safe filesystem storage."""
-    filename = os.path.basename(filename)
-    filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-    filename = filename.strip(' .')
-    return filename if filename else 'invoice'
-
-
-def _extract_invoice_number(filename: str) -> Optional[str]:
-    """Try to extract invoice number from filename."""
-    stem = Path(filename).stem
-    patterns = [
-        r'F?(\d{10})',
-        r'(\d{7,})',
-        r'FA[-_]?(\d+)',
-        r'INV[-_]?(\d+)',
-        r'[Ff]akt[uú]ra[-_]?(\d+)',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, stem)
-        if match:
-            return match.group(1) if match.lastindex else match.group(0)
-    return None
-
-
-def _get_file_type(filename: str) -> str:
-    """Get file type from filename."""
-    ext = Path(filename).suffix.lower()
-    type_map = {
-        '.pdf': 'pdf', '.csv': 'csv', '.xlsx': 'xlsx', '.xls': 'xls',
-        '.doc': 'doc', '.docx': 'docx', '.xml': 'xml', '.txt': 'txt',
-    }
-    return type_map.get(ext, 'other')
 
 
 # ============================================================================
@@ -211,48 +167,17 @@ async def upload_invoice(
     vat_included: bool = Form(True),
     db: AsyncSession = Depends(get_session),
 ):
-    """Archive the original and supported invoice lines without changing stock."""
-    from hashlib import sha256
-    from inventory_hub.services.invoice_archive import ingest_invoice, parse_uploaded_document, resolve_supplier, InvoiceArchiveError, MAX_FILE
-    if not file.filename:
-        raise HTTPException(400, "No filename provided")
-    if Path(file.filename).suffix.lower() not in ALLOWED_EXTENSIONS:
-        raise HTTPException(422, detail={"code": "invoice_file_type_unsupported", "known_unapplied": True})
-    try:
-        supplier = await resolve_supplier(db, supplier_code)
-    except InvoiceArchiveError as error:
-        await db.rollback()
-        raise HTTPException(error.status, detail={"code": error.code, "known_unapplied": True}) from None
-    try:
-        parsed_invoice_date = date.fromisoformat(invoice_date) if invoice_date else None
-        parsed_due_date = date.fromisoformat(due_date) if due_date else None
-    except ValueError:
-        raise HTTPException(422, detail={"code": "invoice_date_invalid", "known_unapplied": True}) from None
+    """Canonical supplier upload, shared by every frontend entry point."""
+    from inventory_hub.services import invoice_upload
+    from inventory_hub.services.invoice_archive import InvoiceArchiveError, MAX_FILE
     content = await file.read(MAX_FILE + 1)
-    if not content or len(content) > MAX_FILE:
-        raise HTTPException(422, detail={"code": "invoice_file_invalid", "known_unapplied": True})
-    metadata, lines = await asyncio.to_thread(parse_uploaded_document, supplier.code, file.filename, content)
-    supplied = {"invoice_number": invoice_number, "invoice_date": parsed_invoice_date, "due_date": parsed_due_date}
-    for key, value in supplied.items():
-        if value is not None and metadata.get(key) is not None and value != metadata[key]:
-            raise HTTPException(422, detail={"code": "invoice_source_metadata_conflict", "known_unapplied": True})
-        if value is not None:
-            metadata[key] = value
-    metadata.setdefault("invoice_number", _extract_invoice_number(file.filename))
     try:
-        result = await ingest_invoice(db, direction="purchase", source_kind="upload",
-            source_key="sha256:" + sha256(content).hexdigest(), supplier_id=supplier.id,
-            metadata=metadata, lines=lines, files=[{"filename": file.filename, "content": content}],
-            source_data={"kind": "manual-upload"})
-        if not result["replayed"]:
-            await db.execute(text("UPDATE uploaded_invoices SET vat_included=:included WHERE id=:id"),
-                             {"id": result["id"], "included": vat_included})
-        await db.commit()
+        return await invoice_upload.upload(db, supplier_code=supplier_code,
+            filename=file.filename, content=content, invoice_number=invoice_number,
+            invoice_date=invoice_date, due_date=due_date, vat_included=vat_included)
     except InvoiceArchiveError as error:
         await db.rollback()
         raise HTTPException(error.status, detail={"code": error.code, "known_unapplied": True}) from None
-    return {**result, "supplier_code": supplier_code, "original_filename": file.filename,
-            "invoice_number": metadata["invoice_number"], "message": "Invoice archived"}
 
 
 @router.get("")

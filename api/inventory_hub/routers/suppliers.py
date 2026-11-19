@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File, Query, Request
-from inventory_hub.access import admin_access
+from inventory_hub.access import admin_access, operator_access
+from inventory_hub.database import get_session
+from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
 from inventory_hub.settings import settings
@@ -37,7 +39,6 @@ from inventory_hub.supplier_prefix import SupplierPrefixError, get_supplier_pref
 from inventory_hub.config_secrets import ConfigSecretError, config_patch, public_config
 
 from inventory_hub.adapters.pl_feed_convert import convert_xml_to_upgates
-from inventory_hub.adapters import invoice_pdf
 
 router = APIRouter(tags=["suppliers"])
 
@@ -45,7 +46,6 @@ router = APIRouter(tags=["suppliers"])
 # Constants
 # -----------------------------------------------------------------------------
 MAX_HISTORY_VERSIONS = 5
-ALLOWED_INVOICE_EXTENSIONS = {".csv", ".pdf", ".xlsx", ".xls"}
 
 
 # -----------------------------------------------------------------------------
@@ -654,238 +654,21 @@ async def validate_supplier_config(
     return result
 
 
-def _sanitize_filename(filename: str) -> str:
-    """
-    Sanitize filename - remove spaces, special chars, quotes.
-    Convert spaces to underscores, keep only safe characters.
-    """
-    # Get stem and extension
-    stem = Path(filename).stem
-    ext = Path(filename).suffix.lower()
-
-    # Replace spaces with underscores
-    stem = stem.replace(' ', '_')
-
-    # Remove quotes and other problematic chars
-    stem = re.sub(r'[\'"\(\)\[\]<>:;,!@#$%^&*+=|\\/?]', '', stem)
-
-    # Replace multiple underscores with single
-    stem = re.sub(r'_+', '_', stem)
-
-    # Trim underscores from start/end
-    stem = stem.strip('_')
-
-    # Limit length
-    if len(stem) > 100:
-        stem = stem[:100]
-
-    return f"{stem}{ext}"
-
-
-def _invoices_raw_dir(supplier: str) -> Path:
-    """Get raw invoices directory (for XLSX/XLS files)"""
-    return _supplier_dir(supplier) / "invoices" / "raw"
-
-
-@router.post("/suppliers/{supplier}/upload-invoice")
 async def upload_invoice(
     supplier: str,
     file: UploadFile = File(...),
-    invoice_number: Optional[str] = Query(default=None, description="Override invoice number")
+    invoice_number: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_session),
 ):
-    """Upload invoice file (CSV, XLSX, XLS, or PDF) manually"""
-    if not supplier_path(supplier).exists():
-        raise HTTPException(status_code=404, detail=f"Supplier '{supplier}' not found")
-
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No filename provided")
-
-    ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED_INVOICE_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type '{ext}'. Allowed: {', '.join(ALLOWED_INVOICE_EXTENSIONS)}"
-        )
-
-    if ext == ".csv":
-        raise HTTPException(422, detail={"code": "receiving_direct_csv_unsupported"})
-    if ext in (".xlsx", ".xls") and supplier != "northfinder":
-        raise HTTPException(422, detail={"code": "receiving_spreadsheet_supplier_unsupported"})
-
-    if supplier in invoice_pdf.PARSERS and ext == ".pdf":
-        from inventory_hub.adapters.sk_profi_bike_invoice import (
-            InvoiceConflictError, InvoiceParseError, save_receiving_invoice,
-        )
-        try:
-            content = await file.read(20 * 1024 * 1024 + 1)
-            result = await asyncio.to_thread(
-                save_receiving_invoice, content, DATA_ROOT, supplier, invoice_number,
-                parser=lambda data: invoice_pdf.parse_invoice_pdf(supplier, data),
-            )
-            from inventory_hub.services.invoice_archive import archive_after_upload
-            result['archive'] = await archive_after_upload(supplier, result, invoice_number)
-            return result
-        except InvoiceParseError as error:
-            raise HTTPException(422, detail=str(error)) from None
-        except InvoiceConflictError as error:
-            raise HTTPException(409, detail=str(error)) from None
-
-    # Determine target directory based on file type
-    if ext == '.pdf':
-        target_dir = _invoices_pdf_dir(supplier)
-    elif ext in ('.xlsx', '.xls'):
-        target_dir = _invoices_raw_dir(supplier)
-    else:
-        target_dir = _invoices_csv_dir(supplier)
-
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    # Build sanitized filename
-    if invoice_number:
-        safe_number = re.sub(r'[^a-zA-Z0-9\-_]', '', invoice_number)
-        filename = f"{safe_number}{ext}"
-    else:
-        # Sanitize original filename - removes spaces, quotes, etc.
-        filename = _sanitize_filename(file.filename)
-
-    target_path = target_dir / filename
-    content = await file.read()
-    replayed_file = target_path.exists() and target_path.read_bytes() == content
-    if target_path.exists():
-        if not replayed_file:
-            if invoice_number:
-                raise HTTPException(409, detail={'code': 'invoice_source_changed'})
-            ts = datetime.now().strftime('%Y%m%d%H%M%S')
-            stem = Path(filename).stem
-            filename = f"{stem}_{ts}{ext}"
-            target_path = target_dir / filename
-
-    if not replayed_file:
-        target_path.write_bytes(content)
-
-    csv_path = None
-
-    # Handle XLSX/XLS - convert to CSV
-    if ext in ('.xlsx', '.xls'):
-        try:
-            from inventory_hub.adapters.northfinder_xlsx_parser import parse_xlsx_to_csv
-
-            csv_filename = Path(filename).stem + '.csv'
-            csv_dir = _invoices_csv_dir(supplier)
-            csv_dir.mkdir(parents=True, exist_ok=True)
-            csv_full_path = csv_dir / csv_filename
-
-            result = parse_xlsx_to_csv(target_path, csv_full_path)
-            if result["success"]:
-                csv_path = f"suppliers/{supplier}/invoices/csv/{csv_filename}"
-                # Update index with CSV using map format
-                _update_invoice_index_map(supplier, csv_filename, csv_path, target_path)
-            else:
-                raise HTTPException(422, detail={"code": result.get("code", "receiving_csv_invalid")})
-        except HTTPException:
-            raise
-        except ImportError:
-            pass  # No XLSX parser available
-        except Exception as e:
-            import logging
-            logging.warning(f"Failed to convert XLSX to CSV: {e}")
-    elif ext == '.csv':
-        csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
-        _update_invoice_index_map(supplier, filename, csv_path, None)
-
-    result = {
-        "success": True,
-        "filename": filename,
-        "path": str(target_path.relative_to(DATA_ROOT)),
-        "csv_path": csv_path,
-        "size_bytes": len(content),
-        "replayed": replayed_file,
-    }
-    from inventory_hub.services.invoice_archive import archive_after_upload
-    result['archive'] = await archive_after_upload(supplier, result, invoice_number)
-    return result
+    """Compatibility URL, identical ingestion and privacy to canonical upload."""
+    from inventory_hub.routers.invoices_unified import upload_invoice as canonical_upload
+    return await canonical_upload(supplier_code=supplier, file=file, invoice_number=invoice_number,
+        invoice_date=None, due_date=None, vat_included=True, db=db)
 
 
-def _update_invoice_index_map(supplier: str, filename: str, csv_path: str, raw_path: Optional[Path]) -> None:
-    """
-    Add new invoice to index using canonical map format.
-    Format: { "<invoice_id>": { entry }, ... }
-    """
-    index_path = _index_path(supplier)
-
-    # Load existing index
-    if index_path.exists():
-        try:
-            data = json.loads(index_path.read_text(encoding='utf-8'))
-        except Exception:
-            data = {}
-    else:
-        data = {}
-
-    # Normalize old list format to map
-    if isinstance(data, dict) and "invoices" in data and isinstance(data["invoices"], list):
-        new_data = {}
-        for i, inv in enumerate(data["invoices"]):
-            if isinstance(inv, dict):
-                key = str(inv.get("invoice_id") or inv.get("number") or f"inv_{i}")
-                new_data[key] = inv
-        data = new_data
-    elif isinstance(data, list):
-        new_data = {}
-        for i, inv in enumerate(data):
-            if isinstance(inv, dict):
-                key = str(inv.get("invoice_id") or inv.get("number") or f"inv_{i}")
-                new_data[key] = inv
-        data = new_data
-    elif not isinstance(data, dict):
-        data = {}
-
-    # Filter out meta keys (like "updated_at")
-    data = {k: v for k, v in data.items() if isinstance(v, dict)}
-
-    # Build invoice entry
-    stem = Path(filename).stem
-    invoice_date = None
-    # Try to extract date from filename (pattern: YYYYMMDD or YYYY_MM_DD or DD_MM_YYYY)
-    match = re.search(r'(\d{4})[\-_]?(\d{2})[\-_]?(\d{2})', stem)
-    if match:
-        try:
-            invoice_date = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
-        except Exception:
-            pass
-
-    # Use the same identity as notes, receiving and generated invoice outputs.
-    invoice_id = f"{supplier}:{stem}"
-
-    entry = {
-        "supplier": supplier,
-        "invoice_id": invoice_id,
-        "number": stem,
-        "issue_date": invoice_date or datetime.now().strftime('%Y-%m-%d'),
-        "csv_path": csv_path,
-        "status": "new",
-        "downloaded_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-    if raw_path and raw_path.exists():
-        entry["raw_path"] = str(raw_path.relative_to(DATA_ROOT))
-
-    # Add/update entry
-    # A repeated upload must not reset receiving progress or saved notes.
-    existing_key = invoice_id if invoice_id in data else next((key for key, old in data.items()
-        if isinstance(old, dict) and old.get('number') == stem), invoice_id)
-    existing = data.get(existing_key)
-    data[existing_key] = {**entry, **existing} if isinstance(existing, dict) else entry
-
-    # Save index
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    index_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-
-
-def _update_invoice_index(supplier: str, filename: str) -> None:
-    """Add new invoice to index (legacy - redirects to map version)"""
-    csv_path = f"suppliers/{supplier}/invoices/csv/{filename}"
-    _update_invoice_index_map(supplier, filename, csv_path, None)
+from inventory_hub.routers.invoices_unified import InvoiceRoute
+router.add_api_route("/suppliers/{supplier}/upload-invoice", upload_invoice, methods=["POST"],
+    dependencies=[Depends(operator_access)], route_class_override=InvoiceRoute)
 
 
 @router.delete("/suppliers/{supplier}", dependencies=[Depends(admin_access)])

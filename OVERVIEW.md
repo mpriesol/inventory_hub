@@ -82,11 +82,19 @@ Kanonické aliasy, pôvodná história, potvrdenia a výsledky zostávajú zacho
 
 Automatické Atomer katalógové workery vyžadujú `ATOMER_CATALOG_WORKER_ENABLED=true`; predvolená hodnota je `false`. Samostatný worker [dostupnostných CSV](docs/atomer-availability.md) používa vlastné nastavenie denného exportu a vykonáva iba čítanie zdroja a lokálne uloženie výsledku. Existujúci [export migrácie](docs/migration-export.md) podporuje `local_only=true` bez volania Upgates. Manuálny `scripts/atomer_direct_batch.py` je samostatný obsahový nástroj s vlastným denníkom a [postupom obnovy](docs/atomer-content-import.md), nie všeobecné zlučovanie kariet.
 
+### Spoločné príjmové ovládanie a číselníky
+
+Nahranie faktúry používa spoločný modal a backend `invoice_upload` z Faktúr, Príjmu aj Dodávateľov. Výsledok rozlišuje uložený originál, parsovanie a pripravenosť príjmu. História je samostatná navigácia s návratom do Príjmu. Dávka podporuje výber aktívneho skladu, výslovnú výnimku bez faktúry a vratné odstránenie prázdneho konceptu; neskoršia faktúra neopakuje ručný príjem automaticky.
+
+API `/settings/catalogs` spravuje DB číselník dostupností a existujúce sklady; UI je v `/settings/availability` a `/settings/stock`. Skladová karta uchováva všeobecnú ručnú dostupnosť/viditeľnosť s pôvodom, auditom a filtrom. Dostupnosť sa používa v existujúcom delta prenose; viditeľnosť rešpektuje explicitný publikačný postup. Číselník nemení existujúce automatické dodávateľské pravidlá ani potvrdené množstvá. [Nastavenia](docs/availability-sync.md), [karta](docs/product-editor.md).
+
+Atomer náhľad rozlišuje zahrnutie do CSV od viditeľnosti, podporuje celý filtrovaný výber a jednorazové alebo trvalé ručné hodnoty. Trvalé hodnoty sa ukladajú na karty pri vytvorení CSV iba pre zahrnuté položky. Historické CSV a ich upozornenia zostávajú nemenným záznamom daného načítania.
+
 ## Databázové migrácie
 
-Repozitár obsahuje 55 SQL súborov: `001`–`055`. Aktuálny upgrade runner má 44 modulov: `005`–`038`, potom `046`–`055`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 51 upgrade SQL súborov `005`–`055`.
+Repozitár obsahuje 57 SQL súborov: `001`–`057`. Aktuálny upgrade runner má 46 modulov: `005`–`038`, potom `046`–`057`; modul `atomer_review_migrate` vykonáva **SQL `038`–`045` spolu**. API obraz balí všetkých 53 upgrade SQL súborov `005`–`057`.
 
-Migrácia 054 pridáva rozpracované dávky zmiešaného príjmu a nemenné dôkazy účtovania, migrácia 055 lokálne nastavenia, náhľady a výsledné CSV dostupností Atomeru. Neprijímajú historické zásoby, nezapínajú skladovú autoritu ani nevykonávajú zápisy do e-shopov.
+Migrácia 054 pridáva rozpracované dávky zmiešaného príjmu a nemenné dôkazy účtovania, migrácia 055 lokálne nastavenia, náhľady a výsledné CSV dostupností Atomeru. Migrácia 056 pridáva ručné príjmové skeny a vratnú archiváciu dávok, 057 spoločné dostupnosti a výsledky UUID požiadaviek. Nevytvárajú fyzické zásoby ani nezapínajú skladovú autoritu; zmena ručného dostupnostného textu používa existujúci trigger zapnutého delta plánovača.
 
 Inštalácia 034 používa nový obal `supplier_availability_delivery_once_migrate`: existujúca tabuľka dodávateľských potvrdení je transakčným dôkazom jej dokončenia. Pôvodný SQL sa nemení; jeho jednorazové nastavenie denného intervalu sa pri ďalšom deploymente neopakuje, aby sa zachovala neskoršia voľba frekvencie Husky.
 

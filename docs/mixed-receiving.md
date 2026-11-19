@@ -12,6 +12,22 @@ Mobilná kamera používa zadný fotoaparát a umožní prisvietenie, ak ho zari
 4. Chýbajúcu kartu pripraviť cez existujúci produktový editor. Použije sa presný zdroj daného dodávateľa a spoločné kontroly EAN/SKU. Uloženie karty nevytvorí skladový pohyb. Konflikt identity alebo chýbajúca nákupná cena bránia potvrdeniu dávky.
 5. Súhrn zobrazí faktúry, naskenované množstvo, prepočet na základné jednotky, potvrdený sklad pred/po a prepojené e-shopy. Neoverené množstvo má hodnotu neznámu, nie nula. Jedno potvrdenie zaúčtuje všetky riadky dávky v jednej transakcii.
 
+Pred založením dávky možno zvoliť aktívny sklad; predvolený je sklad označený ako hlavný. Jedna faktúra naďalej patrí jednému skladu. Zmena skladu počas jej prijímania nie je implicitné rozdelenie faktúry medzi sklady.
+
+Nahratie faktúry je dostupné aj pred založením dávky v zdieľanom modale, bez odchodu z aktuálnej práce. História dokončených dávok je samostatný rozbaliteľný prehľad; nahrávanie ju neotvára. Po začatí alebo obnovení príjmu sa zaostrí EAN vstup s bežným vnútorným odsadením. Chýbajúci doklad ponúka nahratie alebo výslovnú ručnú výnimku. Klient zachová UUID a celý payload neistej ručnej operácie či odstránenia konceptu a pri obnove zopakuje tú istú operáciu.
+
+### Výslovný príjem bez faktúry
+
+Ak faktúra chýba, obsluha môže výslovne potvrdiť **Pridať bez faktúry**, uviesť dôvod a prípadne doloženú nákupnú cenu v EUR bez DPH. Chýbajúca cena zostáva `NULL` s príznakom `unknown`; predbežná cena je `provisional`. Táto výnimka obchádza chýbajúci doklad, nie konflikt skladovej identity. Produkt musí mať jednoznačnú existujúcu fyzickú skladovú kartu, overenú spoločným resolverom podľa EAN alebo presného SKU. Množstvo je v základnej skladovej jednotke karty.
+
+Ručný riadok sa uloží do tej istej dávky, viditeľne označený bez faktúry. Má vlastné UUID, dôvod, pôvodcu a nákladový stav. Skontroluje sa v spoločnom súhrne a zaúčtuje spolu s faktúrovými riadkami v jednej transakcii. Používa rovnaký `fifo.write_documented_receipt` ako existujúci samostatný FIFO príjem; nevytvára fiktívnu faktúru ani príjemkovú reláciu. Neúspešná položka vráti späť celú dávku. Následné nahratie faktúry automaticky neprepojí tento ručný pohyb ani nezníži fakturovaný zostatok: rovnaké už prijaté fyzické kusy sa nesmú naskenovať druhýkrát. Doplnenie doloženej nákupnej ceny môže použiť existujúcu revíziu nákladu FIFO.
+
+### Odstránenie prázdnych konceptov a história
+
+Odstránenie prázdnej otvorenej dávky je dôvodová, vratná archivácia. Dávka zmizne z bežného zoznamu, pôvodné UUID a výsledky operácií zostanú zachované. Nový sken do archivovanej dávky je zakázaný, replay pôvodného skenu ostáva dostupný. Dávka s čakajúcimi aktívnymi skenmi sa archivovať nedá: najprv treba výslovne zrušiť jej priradenia.
+
+Osobitná archivácia dokončenej dávky nemení faktúry, množstvá, FIFO ani účtovné pohyby. Je to vyčistenie zobrazenia, nie opätovné otvorenie faktúry alebo vynulovanie fyzického skladu. Oprava už zaúčtovaných množstiev naďalej používa kontrolované kompenzačné pohyby v existujúcom postupe opráv príjemiek.
+
 Faktúra sa automaticky uzavrie iba keď je celé fakturované množstvo preukázateľne zaúčtované. Čiastočná faktúra zostane rozpracovaná. Aj historická dokončená čiastočná príjemka môže prijať zvyšné kusy: pôvodný príjem sa nestornuje, neprijíma znova a neprepisuje. Archivované, stornované a výslovne spracované bez skladu zostávajú blokované.
 
 Výslovne identifikované služby (napríklad doprava) nevytvárajú pohyby a neblokujú fyzické dokončenie faktúry. Neznámy alebo nepriradený riadok sa za službu nepovažuje.
@@ -37,13 +53,20 @@ Autorizované cesty pod `/api/receiving/batches`:
 | `POST /` | Založiť dávku s UUID a skladom. |
 | `GET /`, `GET /{id}` | Obnoviť dávku a načítať aktuálny súhrn. |
 | `POST /{id}/scan` | Uložiť sken; voliteľne vybrať dodávateľa, faktúru a riadok. |
+| `GET /{id}/manual-product?code=...` | Čítacie overenie konkrétnej karty pred výnimkou bez faktúry. |
+| `POST /{id}/manual-scan` | UUID, kód, množstvo, dôvod, `confirmed_without_invoice:true`, voliteľná cena a nákladový stav. |
 | `POST /{id}/scans/{scan}/reassign` | S novým UUID zmeniť faktúru pred účtovaním. |
-| `POST /{id}/scans/{scan}/cancel` | S novým UUID zrušiť čakajúce priradenie. |
+| `POST /{id}/scans/{scan}/cancel` | S novým UUID zrušiť čakajúce faktúrové alebo ručné priradenie. |
+| `POST /{id}/archive`, `POST /{id}/restore` | Vratné skrytie/obnovenie dávky s UUID a dôvodom; `empty_only:true` chráni odstránenie prázdneho konceptu. |
 | `POST /{id}/preview` | Aktuálny súhrn a hash potvrdenia. |
 | `POST /{id}/finalize` | UUID, `preview_hash`, výslovné `confirmed:true`; zaúčtovať raz. |
 
 Migrácia **054_mixed_receiving.sql** pridáva `mixed_receiving_batches`, `mixed_receiving_scans`, nemenné `mixed_receiving_requests` a nemenné `mixed_receiving_postings`. Neaktivuje autoritu, neprijíma staré údaje a nemení existujúce pohyby. Modul `inventory_hub.mixed_receiving_migrate` musí byť v explicitnom runneri a SQL v obraze.
 
-Zámky: UUID operácie → dávka → dodávatelia v poradí ID → príjemky → faktúry → identita → skladové bilancie/FIFO. Sken aj ručná zmena dodržiavajú existujúci dodávateľský/príjemkový zámok. Uložené potvrdenia obsahujú iba potrebný výsledok operácie; rastúci súhrn sa nekopíruje do každej historickej požiadavky.
+Migrácia **056_receiving_manual.sql** aditívne dopĺňa archivačné údaje dávky, oddelené `mixed_receiving_manual_scans` a nemenné väzby `mixed_receiving_manual_postings` na skutočné pohyby. Povinné faktúrové väzby pôvodných skenov sa neuvoľňujú. Migrácia sama nič nearchivuje ani neprijíma.
+
+Ručné skeny používajú existujúcu databázovú ochranu pred zápisom na vyradenú skladovú identitu. Ich prítomnosť na niektorej zo zlučovaných kariet blokuje konsolidáciu aj po zrušení skenu; história, zaúčtovanie a FIFO sa pri zlučovaní nepresúvajú ani nemažú. Prázdna tabuľka ručných skenov konsolidáciu neblokuje.
+
+Zámky finalizácie: UUID operácie → dávka → dodávatelia v poradí ID → príjemky → faktúry → identita → aktívny sklad → skladové bilancie/FIFO. Založenie a obnovenie otvorenej dávky zamyká iba UUID a sklad pred zápisom dávky, nie identitu. Zdieľaný riadkový zámok skladu bráni súbežnej deaktivácii počas vytvorenia alebo potvrdenia príjmu. Sken aj ručná zmena dodržiavajú existujúci dodávateľský/príjemkový zámok. Uložené potvrdenia obsahujú iba potrebný výsledok operácie; rastúci súhrn sa nekopíruje do každej historickej požiadavky.
 
 Databázové regresie `test_mixed_receiving_db.py` overujú opakovaný čiastočný príjem, dokončené čiastočné doklady, súbeh skenov/finalizácie, uvoľnenie kapacity, výber dátumu a cenového riadka, prepočty balení, obnovu, rollback celej dávky a jednoznačný exportný rozsah. `test_mixed_receiving_routes.py` overuje autorizáciu a zákaz cache. Ide o izolované testy, nie potvrdenie produkčného príjmu alebo externých skladových zápisov.

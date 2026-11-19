@@ -844,3 +844,18 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.detail(), before)
         async with self.sessions() as db:
             self.assertEqual(await service.get_save(db, saved["request_id"]), saved)
+
+    async def test_manual_availability_filter_and_card_provenance_are_independent_of_shop_visibility(self):
+        manual = {"label": "do 8 dní", "visible": False, "source": "manual", "actor": "user:8", "updated_at": "2026-11-17T10:00:00+00:00"}
+        async with self.transaction() as db:
+            db.add(ProductEditorOverride(product_id=self.products["BIKE-2"], revision=1, data={"availability": manual}))
+            db.add(ProductEditorOverride(product_id=self.products["BIKE-10"], revision=1, data={"common": {"name": "Only name"}}))
+        async with self.sessions() as db:
+            rows = await service.list_products(db, availability_override="manual")
+            self.assertEqual(rows["total"], 1)
+            self.assertEqual(rows["items"][0]["id"], self.products["BIKE-2"])
+            self.assertEqual(rows["items"][0]["availability_override"], manual)
+            self.assertTrue(rows["items"][0]["shops"][0]["effective"]["visible"])
+            automatic = await service.list_products(db, availability_override="automatic")
+            self.assertEqual(automatic["total"], len(self.products) - 1)
+            self.assertIn(self.products["BIKE-10"], {row["id"] for row in automatic["items"]})

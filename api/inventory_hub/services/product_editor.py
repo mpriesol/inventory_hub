@@ -191,6 +191,7 @@ def _make_row(facts, data, revision, warehouse, stock):
             "snapshot_hash": _digest({"warehouse_code": warehouse["code"] if warehouse else None,
                                       "facts": {key: value for key, value in facts.items() if key != "supplier_availability"}}),
             "supplier_availability": facts.get("supplier_availability"),
+            "availability_override": deepcopy(data.get("availability")),
             "common": common, "variant": variant, "warehouse": warehouse_values, "stock": stock,
             "shops": shops, "overrides": deepcopy(data), "_facts": facts, "_warehouse": warehouse}
 
@@ -378,7 +379,9 @@ async def _rows(db, ids, warehouse):
     return result
 
 
-async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=None, page=1, page_size=50, sort="group_sku", direction="asc", stock_scope="all", activity="all", supplier_link="all"):
+async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=None, page=1, page_size=50, sort="group_sku", direction="asc", stock_scope="all", activity="all", supplier_link="all", availability_override="all"):
+    if availability_override not in ("all", "manual", "automatic"):
+        raise EditorError("product_editor_invalid_request", 422)
     if activity not in ("all", "active", "inactive") or supplier_link not in ("all", "linked", "unlinked"):
         raise EditorError("product_editor_invalid_request", 422)
     if stock_scope not in ("all", "confirmed", "unconfirmed", "in_stock"):
@@ -391,6 +394,9 @@ async def list_products(db, q="", brand=None, shop_code=None, warehouse_code=Non
     statement = select(Product.id).outerjoin(ProductEditorOverride, ProductEditorOverride.product_id == Product.id)
     statement = statement.outerjoin(ProductGroup, ProductGroup.id == Product.group_id)
     statement = statement.where(current_product_condition())
+    if availability_override != "all":
+        manual = func.coalesce(ProductEditorOverride.data.has_key("availability"), False)
+        statement = statement.where(manual if availability_override == "manual" else ~manual)
     if activity != "all":
         statement = statement.where(Product.is_active.is_(activity == "active"))
     if supplier_link != "all":
