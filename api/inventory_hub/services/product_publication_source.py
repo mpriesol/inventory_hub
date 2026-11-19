@@ -100,7 +100,8 @@ def _availability_observations(payload, targets):
             if not isinstance(row.get('availability'), str):
                 raise source.SourceError('supplier_availability_publication_remote_unknown', 422)
             result[code] = {'identity': observed['identity'], 'options': None,
-                'leaf': {'code': code, 'stock': observed['quantity'], 'availability': row['availability']}}
+                'leaf': {'code': code, 'stock': observed['quantity'], 'availability': row['availability'],
+                         'archived_yn': row.get('archived_yn'), 'can_add_to_basket_yn': row.get('can_add_to_basket_yn')}}
         except source.SourceError as error:
             result[code] = error
     return result
@@ -157,6 +158,11 @@ def field_values(remote, fields, options):
         if not isinstance(leaf.get('availability'), str):
             raise source.SourceError('supplier_availability_publication_remote_unknown', 422)
         values.update(availability=leaf['availability'], remote_stock=source._quantity(leaf.get('stock')))
+    for field in ('archived_yn', 'can_add_to_basket_yn'):
+        if field in fields:
+            if type(leaf.get(field)) is not bool:
+                raise source.SourceError('supplier_availability_remote_visibility_unknown', 422)
+            values[field] = leaf[field]
     if 'name' in fields:
         values['name'] = next((r.get('title') for r in leaf.get('descriptions', []) if r.get('language') == 'sk'), None)
     if 'visible' in fields:
@@ -250,7 +256,7 @@ async def write_once(shop, identity, fingerprint, payload):
 
 
 def _availability_batch(items):
-    """One availability-only envelope, grouping variants by their real parent."""
+    """One availability/visibility envelope, grouping variants by their real parent."""
     if not 1 <= len(items) <= 20:
         raise source.SourceError('supplier_availability_invalid_batch', 422)
     products, identities = {}, []
@@ -260,6 +266,11 @@ def _availability_batch(items):
         if not isinstance(label, str) or not 0 < len(label) <= 100 or any(ord(c) < 32 for c in label):
             raise source.SourceError('supplier_availability_invalid_batch', 422)
         leaf = {'code': identity['code'], 'availability': label}
+        flag = 'archived_yn' if identity['variant_code'] is None else 'can_add_to_basket_yn'
+        if flag in item:
+            if type(item[flag]) is not bool:
+                raise source.SourceError('supplier_availability_invalid_batch', 422)
+            leaf[flag] = item[flag]
         if identity['variant_code'] is None:
             if identity['code'] in products:
                 raise source.SourceError('supplier_availability_invalid_batch', 422)

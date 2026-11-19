@@ -20,8 +20,11 @@ def increment(local, native, old_local, old_native):
     return str(int(Decimal(local) - Decimal(old_local) - Decimal(native) + Decimal(old_native)))
 
 
-def metadata(value):
-    return {key: value.get(key) for key in ('availability', 'can_add_to_basket_yn')}
+def metadata(value, *, include_archive=False):
+    fields = {key: value.get(key) for key in ('availability', 'can_add_to_basket_yn')}
+    if include_archive and 'archived_yn' in value:
+        fields['archived_yn'] = value['archived_yn']
+    return fields
 
 
 async def checkpoint(db, shop_id, sku, lock=False, sale_key=""):
@@ -77,21 +80,41 @@ def check_binding(cp, state, warehouse_id, fingerprint):
         raise sync.SyncError('stock_sync_baseline_changed')
 
 
-def payload(cp, state):
+def payload(cp, state, observed=None):
+    desired = metadata(state['value'], include_archive=True)
+    managed_archive = cp.metadata_values.get('archived_yn') is True
+    if state['value'].get('hold_supplier_availability'):
+        current = observed or cp.metadata_values
+        previous = current.get('availability')
+        if not state['value'].get('manual_availability') and previous and previous.casefold() != 'skladom':
+            desired['availability'] = previous
+        if type(current.get('can_add_to_basket_yn')) is bool:
+            desired['can_add_to_basket_yn'] = current['can_add_to_basket_yn']
+    elif desired.get('archived_yn') is True:
+        # An item the shop had already archived remains operator-owned.
+        if not managed_archive and (observed or cp.last_observation or {}).get('archived_yn') is True:
+            desired.pop('archived_yn')
+    elif managed_archive:
+        desired['archived_yn'] = False
     return {'stock_increment': increment(state['value']['stock'], state['native'], cp.local_quantity, cp.native_quantity),
-            **metadata(state['value'])}
+            **desired}
 
 
 def needs_read(cp, state, at):
     value = payload(cp, state)
-    return (value['stock_increment'] != '0' or metadata(value) != cp.metadata_values
+    return (value['stock_increment'] != '0' or snapshot(cp, state, value)['metadata_values'] != cp.metadata_values
             or cp.last_audit_at is None or cp.last_audit_at <= at - timedelta(seconds=AUDIT_SECONDS)
             or bool((cp.last_observation or {}).get('audit_mismatch')))
 
 
-def snapshot(cp, state):
+def snapshot(cp, state, value=None):
+    publication = value if value is not None else payload(cp, state)
+    fields = metadata(publication)
+    if publication.get('archived_yn') is True or (state['value'].get('hold_supplier_availability')
+                                                   and cp.metadata_values.get('archived_yn') is True):
+        fields['archived_yn'] = True
     result = {'checkpoint_revision': cp.revision, 'local_quantity': state['value']['stock'],
-              'native_quantity': state['native'], 'metadata_values': metadata(state['value'])}
+              'native_quantity': state['native'], 'metadata_values': fields}
     if state.get('sale_key'):
         result.update(sale_key=state['sale_key'], sale_to_stock_factor=state['sale_to_stock_factor'])
     return result
@@ -237,7 +260,8 @@ async def process_item(db, item_id, prefetched=None):
 
     try:
         item, cp, state = await locked()
-        value, frozen = payload(cp, state), snapshot(cp, state)
+        value = payload(cp, state)
+        frozen = snapshot(cp, state, value)
         if not needs_read(cp, state, sync.now()):
             # Own-shop native order and matching Hub reservation may cancel
             # exactly. Advance both counters without any network request.
@@ -261,9 +285,12 @@ async def process_item(db, item_id, prefetched=None):
         item, cp, state = await locked()
         if cp.target != observed['identity']:
             raise sync.SyncError('stock_sync_identity_changed')
-        value, frozen = payload(cp, state), snapshot(cp, state)
+        value = payload(cp, state, observed)
+        if 'archived_yn' in value and type(observed.get('archived_yn')) is not bool:
+            raise sync.SyncError('supplier_availability_remote_visibility_unknown')
+        frozen = snapshot(cp, state, value)
         item.target, item.desired, item.before, item.delta_snapshot = cp.target, value, observed, frozen
-        if value['stock_increment'] == '0' and metadata(observed) == metadata(value):
+        if value['stock_increment'] == '0' and sync.matches(observed, metadata(value, include_archive=True)):
             # A periodic read only reports drift; it never corrects it with an
             # absolute PUT or guesses which concurrent order caused it.
             cp.last_audit_at, cp.last_observation = sync.now(), observed

@@ -11,6 +11,8 @@ Používateľský postup pre stránku **Nastavenia → Dostupnosti a prenos zás
 
 Predvolený automatický interval je 24 hodín a platnosť údajov 48 hodín. Automatický interval môže byť 24 hodín až 7 dní; existujúce týždenné zdroje zostávajú týždenné. Staršie zapnuté kratšie intervaly sa upravia na denné. Vypnuté zdroje ani ručné B2B čítanie Sloger sa nezapnú. Ručný refresh možno vyžiadať aj skôr. Platnosť je 300 až 2 592 000 sekúnd a musí pokrývať interval; formulár pri automatike ponechá aspoň hodinu rezervy. Prah 1 až 100 % upozorní na menší zdroj; predvolené nastavenie je 100 %. Platné položky sa prijmú aj pri upozornení. Pri výrazne menšom zdroji najprv overte príčinu. Chybné alebo chýbajúce položky neprepíšu predchádzajúce údaje nulami a nepredĺžia ich platnosť. Po vypršaní ich platnosti sa použije neznáma dostupnosť.
 
+Otvor **Ak položka chýba v načítanom feede** pri dodávateľovi a vyber viditeľnosť a dostupnosť. Pri ďalšom prenose použije Hub toto pravidlo pre chýbajúci kód z úplného feedu. Chyba sťahovania sa zobrazí vo **Vyžaduje pozornosť** a odloží dodávateľské zmeny do vyriešenia alebo ďalšieho úspechu. Skladová karta zobrazuje posledných desať zmien dostupnosti a posledný potvrdený prenos po e-shopoch.
+
 Údaje dodávateľa nikdy nepridávajú fyzické kusy do nášho skladu. Text dostupnosti patrí do konfigurácie konkrétneho dodávateľa. Štandardný text pre dostupný tovar dodávateľa je **do 5 dní**, ak dodávateľ nemá vlastné nastavenie. Neznáma alebo zastaraná dostupnosť má text **overíme** a tovar zostáva objednateľný.
 
 Pri zapnutom prenose dodávateľských dostupností si Hub pamätá posledný potvrdený

@@ -22,10 +22,11 @@ async def suggestions(db, supplier, products):
     if not selected:
         return {}, {}
     mappings = list(await db.scalars(select(ShopProduct).join(Shop, Shop.id == ShopProduct.shop_id)
-        .where(Shop.code == policy['shop_code'], ShopProduct.is_listed.is_(True), ShopProduct.product_id.in_(selected))))
+        .where(Shop.code == policy['shop_code'], ShopProduct.is_listed.is_(True),
+               ShopProduct.retired_at.is_(None), ShopProduct.product_id.in_(selected))))
     if not mappings:
         return {}, {}
-    facts = await product_links._facts(db, [m.product_id for m in mappings])
+    facts = await product_links._facts(db, sorted({m.product_id for m in mappings}))
     sources = list(await db.scalars(select(SupplierProduct).where(SupplierProduct.supplier_id == supplier.id,
         SupplierProduct.is_active.is_(True), SupplierProduct.is_discontinued.is_(False), func.upper(SupplierProduct.brand).in_(brands))))
     by_code = {source.supplier_sku:source for source in sources}
@@ -36,12 +37,14 @@ async def suggestions(db, supplier, products):
     cache = {(row.shop_id,row.external_code):row.data for row in await db.scalars(select(ShopProductContent).where(
         ShopProductContent.shop_id.in_({m.shop_id for m in mappings}),
         ShopProductContent.external_code.in_({m.parent_code or m.external_code for m in mappings})))}
-    result, issues = {}, {}
+    matches, issues = defaultdict(set), {}
     for mapping in mappings:
         product = selected[mapping.product_id]
         # Existing cache evidence must identify the exact mapped native leaf.
-        document = cache.get((mapping.shop_id,mapping.parent_code or mapping.external_code)) or {}
+        document = cache.get((mapping.shop_id,mapping.parent_code or mapping.external_code))
+        document = document if isinstance(document, dict) else {}
         leaves = document.get('variants', []) if mapping.is_variant else [document]
+        leaves = leaves if isinstance(leaves, list) else []
         leaves = [leaf for leaf in leaves if isinstance(leaf,dict) and leaf.get('code') == mapping.external_code]
         supplier_code = None
         if len(leaves) == 1 and mapping.native_id:
@@ -60,8 +63,13 @@ async def suggestions(db, supplier, products):
                 issues[product.id] = 'supplier_code_barcode_conflict'
                 continue
             candidates[exact.id] = exact
-        if len(candidates) == 1:
-            result[product.id] = next(iter(candidates.values())).supplier_sku
-        elif len(candidates) > 1:
-            issues[product.id] = 'supplier_candidate_ambiguous'
+        matches[product.id].update(source.supplier_sku for source in candidates.values())
+    result = {}
+    for product_id, codes in matches.items():
+        if product_id in issues:
+            continue
+        if len(codes) == 1:
+            result[product_id] = next(iter(codes))
+        elif len(codes) > 1:
+            issues[product_id] = 'supplier_candidate_ambiguous'
     return result, issues

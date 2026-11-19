@@ -108,6 +108,12 @@ async def publications(product_id: int, db: AsyncSession = Depends(get_session))
     return await _call(product_publication.history(db, product_id))
 
 
+@router.get("/products/{product_id}/availability-status")
+async def availability_status(product_id: int, db: AsyncSession = Depends(get_session)):
+    from inventory_hub.services import product_availability_history
+    return await _call(product_availability_history.status(db, product_id))
+
+
 @router.get("/publications/{publication_id}")
 async def publication(publication_id: UUID, db: AsyncSession = Depends(get_session)):
     return await _call(product_publication.get(db, str(publication_id)))

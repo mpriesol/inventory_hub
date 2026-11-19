@@ -1,10 +1,10 @@
 """Operator-only supplier scheduling and manual queue controls."""
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from inventory_hub.access import operator_access
+from inventory_hub.access import admin_access, operator_access
 from inventory_hub.database import get_session
 from inventory_hub.routers.stock_settings import NoStoreRoute
 from inventory_hub.services import supplier_availability as service
@@ -12,6 +12,7 @@ from inventory_hub.services import supplier_links
 from inventory_hub.services.supplier_availability_source import AvailabilityError
 from inventory_hub.supplier_availability_types import (
     SupplierAvailabilityInput, SupplierAvailabilityRunInput, SupplierLinkReconcileInput, SupplierAvailabilityRecheckInput,
+    VerifiedSupplierLinksInput,
 )
 
 router = APIRouter(prefix="/supplier-availability", tags=["supplier-availability"], route_class=NoStoreRoute,
@@ -81,10 +82,17 @@ async def reconcile_links(supplier: SupplierCode, payload: SupplierLinkReconcile
         db, supplier, after_product_id=payload.after_product_id, limit=payload.limit, match_catalog=True))
 
 
+@router.post("/{supplier}/links/confirmed-codes", dependencies=[Depends(admin_access)])
+async def link_confirmed_codes(supplier: SupplierCode, payload: VerifiedSupplierLinksInput, request: Request,
+                               db: AsyncSession = Depends(get_session)):
+    user = getattr(request.state, "hub_user", None)
+    actor = f"user:{user['id']}" if user else "operator-token"
+    return await _call(supplier_links.link_verified_codes(db, supplier, payload, actor=actor))
+
+
 # Read-only history/recovery for the retired one-off administrative rename.
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
-from inventory_hub.access import admin_access
 from inventory_hub.services import zookee_code_reconciliation as code_service
 from inventory_hub.services.product_editor import EditorError
 

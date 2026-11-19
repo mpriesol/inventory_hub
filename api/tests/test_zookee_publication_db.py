@@ -143,6 +143,55 @@ class SupplierPublicationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(delivery.desired, delivery.confirmed)
             self.assertEqual(delivery.confirmed_label, 'do 5 dní')
 
+    async def test_missing_variant_disables_only_it_and_successful_return_restores_orderability(self):
+        await self.seed_worker_observation(True)
+        self.remote['leaf']['can_add_to_basket_yn'] = True
+        async with self.transaction() as db:
+            row = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+            row.missing_visibility, row.missing_availability = 'archive', 'Mimo ponuky'
+            fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+            fact.raw, fact.available, fact.quantity, fact.quantity_kind = {'source': service.availability.ABSENCE_SOURCE}, None, None, 'unknown'
+        self.observation.return_value = {'fresh': False, 'available': None, 'status': 'missing_feed_item',
+                                         'label': 'Mimo ponuky', 'missing_visibility': 'archive'}
+        async def write_variant(_shop, _identity, _fingerprint, payload):
+            parent, = payload['products']
+            self.assertEqual(set(parent), {'code', 'variants'})
+            leaf, = parent['variants']
+            self.assertEqual(leaf['code'], 'BIKE-2')
+            self.remote['leaf'].update(leaf)
+        self.writer.side_effect = write_variant
+        with ExitStack() as stack:
+            reader = self.worker_mocks(stack)
+            self.assertTrue(await service.cycle())
+            self.assertEqual(self.remote['leaf']['availability'], 'Mimo ponuky')
+            self.assertFalse(self.remote['leaf']['can_add_to_basket_yn'])
+            async with self.transaction() as db:
+                row = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+                row.last_error = 'supplier_availability_parse_failed'
+            self.assertFalse(await service.cycle())
+            self.assertEqual(reader.await_count, 3)
+            await self.seed_worker_observation(True, next_run=True)
+            async with self.transaction() as db:
+                row = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+                row.last_error = None
+                fact = await db.get(SupplierAvailabilityObservation, (self.supplier_id, self.sku))
+                fact.raw = {}
+            self.assertTrue(await service.cycle())
+            self.assertEqual(self.remote['leaf']['availability'], 'do 5 dní')
+            self.assertTrue(self.remote['leaf']['can_add_to_basket_yn'])
+            self.assertFalse(await service.cycle())
+        from inventory_hub.services import product_availability_history
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            await raw.driver_connection.execute((self.sql_root / '010_stock_publication.sql').read_text())
+        async with self.sessions() as db:
+            activity = await product_availability_history.status(db, self.products['BIKE-2'])
+            changes = [change for change in activity['changes'] if change['kind'] == 'shop']
+            self.assertEqual([(change['before'], change['after']) for change in changes],
+                             [('Mimo ponuky', 'do 5 dní'), ('do 5 dní', 'Mimo ponuky')])
+            shop = next(item for item in activity['shops'] if item['shop_code'] == 'biketrek')
+            self.assertEqual(shop['last_sync_at'], changes[0]['changed_at'])
+
     async def test_changed_boolean_sends_once_then_confirms_new_target_state(self):
         await self.seed_worker_observation(False)
         with ExitStack() as stack:

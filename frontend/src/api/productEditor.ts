@@ -1,6 +1,7 @@
 import type { ManualAvailability } from './catalogs';
 import { hubRequest } from './access';
 import { SkuIdentityInput } from './skuPolicy';
+import type { SupplierObservationStatus } from './supplierAvailability';
 
 export type ProductItemType = 'stock' | 'service';
 export type StockUnit = 'pcs' | 'pair' | 'pack' | 'm';
@@ -24,9 +25,9 @@ export interface ProductEditorRow {
   supplier_availability?: {
     available: boolean | null; fresh: boolean; label: string; source: string | null;
     quantity: string | null; quantity_kind: 'exact' | 'minimum' | 'boolean' | 'unknown';
-    observed_at: string | null; expires_at: string | null; orderable: true;
+    observed_at: string | null; expires_at: string | null; orderable: boolean;
     availability_state?: 'available' | 'unavailable' | 'unknown';
-    status?: 'missing_link' | 'unavailable_source' | 'unconfigured' | 'not_loaded' | 'missing_observation' | 'feed_mismatch' | 'configuration_error' | 'stale' | 'fresh' | 'conflict';
+    status?: SupplierObservationStatus;
     reason?: string | null; supplier?: string; supplier_name?: string; supplier_sku?: string;
     feed_key?: string | null; observation_feed_key?: string | null; last_success_at?: string | null;
     last_error?: string | null; refresh_state?: 'idle' | 'queued' | 'running';
@@ -53,6 +54,12 @@ export interface ProductEditorFilters {
   sort: 'group_sku' | 'sku' | 'name'; direction: 'asc' | 'desc';
 }
 export interface ProductEditorPageData { items: ProductEditorRow[]; total: number; page: number; page_size: number; warehouse: { code: string; name: string } | null; currency: 'EUR'; price_basis: 'incl_vat' }
+export interface ProductAvailabilityActivityData {
+  changes: { kind: 'supplier' | 'shop'; source: string; changed_at: string; before: string | null; after: string; event_id: string }[];
+  shops: { shop_code: string; shop_name: string; last_sync_at: string | null }[];
+}
+export const getProductAvailabilityActivity = (id: number, signal?: AbortSignal) =>
+  hubRequest<ProductAvailabilityActivityData>(`/api/product-editor/products/${id}/availability-status`, undefined, signal);
 export interface ProductEditorChange {
   is_active?: boolean; item_type?: ProductItemType; stock_unit?: StockUnit;
   product_id: number; expected_revision: number; snapshot_hash: string;

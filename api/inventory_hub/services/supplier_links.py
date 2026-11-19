@@ -218,6 +218,7 @@ async def bind_explicit_supplier_source(db, product_id, supplier_id, supplier_sk
         raise AvailabilityError("supplier_card_links_identity_conflict", 409)
     if source is None:
         source = SupplierProduct(supplier_id=supplier_id, supplier_sku=supplier_sku, name=product.name,
+            brand=product.brand or brand,
             attributes={"supplier_identity": {"source": "manual_card", "actor": actor}})
         db.add(source)
         await db.flush()
@@ -233,6 +234,42 @@ async def bind_explicit_supplier_source(db, product_id, supplier_id, supplier_sk
         db.add(ProductSupplySource(product_id=product_id, supplier_product_id=source.id))
     await db.flush()
     return {"product_id": product_id, "supplier_product_id": source.id, "created_link": link is None}
+
+
+async def _link_verified_code(db, supplier, payload, *, actor):
+    """A reviewed historical offer can be linked even before the supplier lists it again."""
+    from inventory_hub.services.canonical_products import current_product_condition
+    from inventory_hub.services.identifiers import ProductIdentifierService
+
+    product = await db.scalar(select(Product).where(
+        Product.id == payload.product_id, Product.is_active.is_(True), current_product_condition()))
+    if not product or product.sku != payload.hub_sku:
+        raise AvailabilityError("supplier_card_links_identity_conflict", 409)
+    barcodes = list(await db.scalars(select(ProductIdentifier.value).where(
+        ProductIdentifier.product_id == product.id,
+        ProductIdentifier.identifier_type.in_((IdentifierType.ean, IdentifierType.upc)))))
+    key = ProductIdentifierService.gtin_key(payload.ean)
+    if not key or key not in {ProductIdentifierService.gtin_key(barcode) for barcode in barcodes}:
+        raise AvailabilityError("supplier_card_links_identity_conflict", 409)
+    return await bind_explicit_supplier_source(db, product.id, supplier.id, payload.supplier_sku,
+        barcodes=(payload.ean,), actor=actor)
+
+
+async def link_verified_codes(db, supplier_code, payload, *, actor):
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    supplier = await db.scalar(select(Supplier).where(Supplier.code == supplier_code))
+    if not supplier or not supplier.is_active:
+        raise AvailabilityError("supplier_source_inactive", 409)
+    items = []
+    for row in payload.items:
+        try:
+            async with db.begin_nested():
+                result = await _link_verified_code(db, supplier, row, actor=actor)
+            items.append({**result, "hub_sku": row.hub_sku, "supplier_sku": row.supplier_sku})
+        except AvailabilityError as error:
+            items.append({"product_id": row.product_id, "hub_sku": row.hub_sku, "supplier_sku": row.supplier_sku,
+                          "error": error.code})
+    return {"supplier": supplier_code, "items": items}
 
 
 async def reconcile_product_links(db, product_ids):

@@ -7,7 +7,8 @@ import { ActionScope } from '../components/ui/ActionScope';
 import { HelpHint } from '../components/ui/HelpHint';
 import { getUpgatesCapacity, UpgatesCapacity } from '../api/upgatesCapacity';
 import { accessRevision, hubUnlocked, subscribeAccess, unlockHub } from '../api/access';
-import { getSupplierAvailability, getSupplierFeedFailures, SupplierFeedRun, SupplierFeedFailures, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue, supplierAvailabilityErrorCode } from '../api/supplierAvailability';
+import { getSupplierAvailability, getSupplierFeedFailures, SupplierFeedRun, SupplierFeedFailures, reconcileSupplierLinks, runSupplierAvailability, saveSupplierAvailability, SupplierAvailabilitySettings, SupplierLinkIssue, supplierAvailabilityErrorCode, type MissingVisibility } from '../api/supplierAvailability';
+import { listAvailabilityOptions } from '../api/catalogs';
 import { getStockSyncOptions, getStockSyncRun, resolveStockSyncItem, runStockSync, saveStockSyncSettings, saveStockSyncWarehouse,
   STOCK_SYNC_FIELDS, StockSyncField, StockSyncOptions, StockSyncRunDetail, StockSyncValues, StockSyncResolution, StockSyncItem } from '../api/stockSync';
 import './OpeningStockPage.css';
@@ -75,19 +76,29 @@ function SupplierRunResult({ supplier, run }: { supplier: string; run: SupplierF
   </section>;
 }
 
-function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }: { value: SupplierAvailabilitySettings; replace: (value: SupplierAvailabilitySettings) => void; onBusy: (supplier: string, busy: boolean) => void; onLeaveBlocked: (supplier: string, blocked: boolean) => void; refreshVersion: number }) {
+function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion, availabilityLabels }: { value: SupplierAvailabilitySettings; replace: (value: SupplierAvailabilitySettings) => void; onBusy: (supplier: string, busy: boolean) => void; onLeaveBlocked: (supplier: string, blocked: boolean) => void; refreshVersion: number; availabilityLabels: string[] }) {
   const { t, i18n } = useTranslation();
   const operation = useOperation();
   const manualOnly = value.manual_only === true || value.supplier === 'sloger';
   const [baseline, setBaseline] = useState(value);
   const [enabled, setEnabled] = useState(value.enabled), [feed, setFeed] = useState(value.feed_key);
   const [interval, setInterval] = useState(String(value.interval_seconds)), [freshness, setFreshness] = useState(String(value.freshness_seconds)), [coverage, setCoverage] = useState(String(value.min_coverage_percent));
+  const [missingVisibility, setMissingVisibility] = useState<MissingVisibility>(value.missing_visibility ?? 'keep');
+  const [missingAvailability, setMissingAvailability] = useState(value.missing_availability ?? 'overíme');
   const [saved, setSaved] = useState(false);
   const [linkResult, setLinkResult] = useState<{ scanned: number; linked: number; existing: number; skipped: number; conflicts: number; issues: SupplierLinkIssue[]; complete: boolean } | null>(null);
-  function resetForm(next: SupplierAvailabilitySettings) { setBaseline(next); setEnabled(next.enabled); setFeed(next.feed_key); setInterval(String(next.interval_seconds)); setFreshness(String(next.freshness_seconds)); setCoverage(String(next.min_coverage_percent)); operation.recovered(); }
+  function resetForm(next: SupplierAvailabilitySettings) {
+    setBaseline(next); setEnabled(next.enabled); setFeed(next.feed_key); setInterval(String(next.interval_seconds));
+    setFreshness(String(next.freshness_seconds)); setCoverage(String(next.min_coverage_percent));
+    setMissingVisibility(next.missing_visibility ?? 'keep'); setMissingAvailability(next.missing_availability ?? 'overíme');
+    operation.recovered();
+  }
   useEffect(() => { resetForm(value); }, [refreshVersion]);
   useEffect(() => { onBusy(value.supplier, operation.busy); return () => onBusy(value.supplier, false); }, [operation.busy, value.supplier]);
-  const dirty = freshness !== String(baseline.freshness_seconds) || (!manualOnly && (enabled !== baseline.enabled || feed !== baseline.feed_key || interval !== String(baseline.interval_seconds) || coverage !== String(baseline.min_coverage_percent)));
+  const missingChanged = missingVisibility !== (baseline.missing_visibility ?? 'keep') || missingAvailability !== (baseline.missing_availability ?? 'overíme');
+  const dirty = freshness !== String(baseline.freshness_seconds) || (!manualOnly && (enabled !== baseline.enabled || feed !== baseline.feed_key || interval !== String(baseline.interval_seconds) || coverage !== String(baseline.min_coverage_percent) || missingChanged));
+  const missingLabels = [...new Set(['overíme', value.availability?.unknown, value.missing_availability, ...availabilityLabels].filter((label): label is string => !!label))]
+    .filter(label => label === missingAvailability || ![value.availability?.orderable?.toLowerCase(), 'skladom'].includes(label.toLowerCase()));
   const automaticMinimum = value.supplier === 'husky' ? 3600 : 86400;
   const minInterval = enabled ? automaticMinimum : 300;
   const valid = integer(freshness, 300, 2592000) && (manualOnly || (value.feed_keys.includes(feed) && integer(interval, minInterval, 604800) && Number(freshness) >= Number(interval) + (enabled ? 3600 : 0) && integer(coverage, 1, 100)));
@@ -104,7 +115,12 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
   function save() {
     if (!valid || blocked) return;
     setSaved(false);
-    operation.run(true, () => saveSupplierAvailability(value.supplier, { expected_revision: value.revision, enabled: manualOnly ? false : enabled, feed_key: manualOnly ? value.feed_key : feed, interval_seconds: manualOnly ? Math.min(value.interval_seconds, Number(freshness)) : Number(interval), freshness_seconds: Number(freshness), min_coverage_percent: manualOnly ? value.min_coverage_percent : Number(coverage) }), result => { resetForm(result); replace({ ...result, latest_run: result.feed_key === value.feed_key ? value.latest_run : null }); setSaved(true); });
+    operation.run(true, () => saveSupplierAvailability(value.supplier, {
+      expected_revision: value.revision, enabled: manualOnly ? false : enabled, feed_key: manualOnly ? value.feed_key : feed,
+      interval_seconds: manualOnly ? Math.min(value.interval_seconds, Number(freshness)) : Number(interval),
+      freshness_seconds: Number(freshness), min_coverage_percent: manualOnly ? value.min_coverage_percent : Number(coverage),
+      ...(!manualOnly && missingChanged ? { missing_visibility: missingVisibility, missing_availability: missingAvailability } : {}),
+    }), result => { resetForm(result); replace({ ...result, latest_run: result.feed_key === value.feed_key ? value.latest_run : null }); setSaved(true); });
   }
   function repairLinks() {
     if (blocked || dirty) return;
@@ -146,6 +162,20 @@ function SupplierCard({ value, replace, onBusy, onLeaveBlocked, refreshVersion }
       {!manualOnly && <label>{t('availabilitySync.coverage')}<input data-testid={id('coverage')} type="number" min="1" max="100" step="1" value={coverage} disabled={blocked} onChange={event => { setCoverage(event.target.value); setSaved(false); }} /><small>{t('availabilitySync.coverageHelp')}</small></label>}
     </div>
     </details>
+    {!manualOnly && <details className="availability-advanced">
+      <summary>{t('availabilitySync.missingPolicy')}</summary>
+      <p>{t('availabilitySync.missingPolicyHelp')}</p>
+      <div className="availability-fields">
+        <label>{t('availabilitySync.missingVisibility')}<select data-testid={id('missing-visibility')} value={missingVisibility} disabled={blocked} onChange={event => { setMissingVisibility(event.target.value as MissingVisibility); setSaved(false); }}>
+          <option value="keep">{t('availabilitySync.missingKeep')}</option>
+          <option value="archive">{t('availabilitySync.missingArchive')}</option>
+        </select></label>
+        <label>{t('availabilitySync.missingAvailability')}<select data-testid={id('missing-availability')} value={missingAvailability} disabled={blocked} onChange={event => { setMissingAvailability(event.target.value); setSaved(false); }}>
+          {missingLabels.map(label => <option key={label} value={label}>{label}</option>)}
+        </select></label>
+      </div>
+      {missingVisibility === 'archive' && <small>{t('availabilitySync.missingArchiveHelp')}</small>}
+    </details>}
     {!manualOnly && <label className="availability-check"><input data-testid={id('enabled')} type="checkbox" checked={enabled} disabled={blocked} onChange={event => {
       setEnabled(event.target.checked); setSaved(false);
       if (event.target.checked) {
@@ -177,12 +207,19 @@ function SuppliersPanel({ selectedSupplier }: { selectedSupplier: string }) {
   const { t } = useTranslation();
   const operation = useOperation();
   const [suppliers, setSuppliers] = useState<SupplierAvailabilitySettings[] | null>(null), [writing, setWriting] = useState<Set<string>>(new Set());
+  const [availabilityLabels, setAvailabilityLabels] = useState<string[]>([]);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [leaveBlocked, setLeaveBlocked] = useState<Set<string>>(new Set());
   function onLeaveBlocked(supplier: string, blocked: boolean) { setLeaveBlocked(previous => { const next = new Set(previous); blocked ? next.add(supplier) : next.delete(supplier); return next; }); }
   function onBusy(supplier: string, busy: boolean) { if (busy) operation.cancel(); setWriting(previous => { const next = new Set(previous); busy ? next.add(supplier) : next.delete(supplier); return next; }); }
   function load() { operation.run(false, signal => getSupplierAvailability(signal), result => { setSuppliers(result.suppliers); setRefreshVersion(v => v + 1); operation.recovered(); }); }
   useEffect(() => { if (selectedSupplier) load(); }, [selectedSupplier]);
+  useEffect(() => {
+    if (!suppliers) return;
+    const controller = new AbortController();
+    listAvailabilityOptions(controller.signal).then(result => setAvailabilityLabels(result.items.map(item => item.label)), () => {});
+    return () => controller.abort();
+  }, [refreshVersion]);
   const pending = suppliers?.some(value => value.running || value.manual_requested_at);
   useEffect(() => {
     if (!pending || writing.size || operation.busy || operation.error) return;
@@ -195,7 +232,7 @@ function SuppliersPanel({ selectedSupplier }: { selectedSupplier: string }) {
     {selectedSupplier && <p>{leaveBlocked.size > 0 ? <><Button data-testid="all-suppliers-blocked" variant="secondary" disabled>{t('availabilitySync.showAllSuppliers')}</Button> <span role="status">{t('availabilitySync.leaveBlocked')}</span></> : <Link data-testid="all-suppliers" to="/settings/availability">{t('availabilitySync.showAllSuppliers')}</Link>}</p>}
     <Feedback error={operation.error} uncertain={false} />
     {visible?.length === 0 && <p>{t(selectedSupplier ? 'availabilitySync.supplierNotFound' : 'availabilitySync.noSuppliers')}</p>}
-    <div className="availability-suppliers">{visible?.map(value => <SupplierCard key={value.supplier} value={value} refreshVersion={refreshVersion} replace={result => setSuppliers(previous => previous!.map(item => item.supplier === result.supplier ? result : item))} onBusy={onBusy} onLeaveBlocked={onLeaveBlocked} />)}</div>
+    <div className="availability-suppliers">{visible?.map(value => <SupplierCard key={value.supplier} value={value} refreshVersion={refreshVersion} availabilityLabels={availabilityLabels} replace={result => setSuppliers(previous => previous!.map(item => item.supplier === result.supplier ? result : item))} onBusy={onBusy} onLeaveBlocked={onLeaveBlocked} />)}</div>
   </section>;
 }
 

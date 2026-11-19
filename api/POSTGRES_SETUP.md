@@ -125,4 +125,6 @@ Po použití dávkového príjmu zachovať nové dôkazy pohybov aj pri oprave k
 
 `056_receiving_manual.sql` pridáva oddelené ručné skeny bez faktúry, nemenné väzby na pohyby a vratnú archiváciu dávok. `057_setting_catalogs.sql` pridáva DB číselník dostupností a výsledky idempotentných požiadaviek. Predvolené dostupnosti sa vložia iba pri prvom vytvorení tabuľky; opakované nasadenie zachová premenovanie a deaktiváciu. Trigger ručnej dostupnosti znovu používa `stock_sync_mark_dirty` iba pre zapnuté autorizované delta nastavenia.
 
+`058_supplier_availability_policy.sql` pridáva predvolené nastavenia chýbajúcich položiek a evidenciu zmien dostupnosti. História začína od prvého nového pozorovania po nasadení. Nastavenie viditeľnosti sa dá vrátiť na **Ponechať v ponuke** a prenos pri ďalšom úspechu obnoví vlastné zmeny na overených prepojeniach.
+
 Obe migrácie sú aditívne, zapojené za 055 a zabalené v API obraze. Samy nevytvárajú príjem ani neaktivujú autoritu. Vratná archivácia zachová pôvodné doklady a účtovnú stopu. Po použití nových dát zachovať tabuľky a aplikovať kompatibilnú opravu vpred; nenasadzovať writer bez podpory ručných príjmov.

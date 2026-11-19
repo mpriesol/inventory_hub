@@ -89,7 +89,7 @@ class StockSyncDeltaSourceTests(unittest.IsolatedAsyncioTestCase):
         invalid_payloads = [None, {}, {**desired(), 'stock': '4'}, {**desired(), 'price': 3},
                             {key: value for key, value in desired().items() if key != 'stock_increment'}]
         invalid_payloads += [{**desired(), 'availability': value} for value in (None, '', 3, [], 'A' * 101, 'A\nB')]
-        invalid_payloads += [{**desired(), 'can_add_to_basket_yn': value} for value in (None, False, 1, 'true')]
+        invalid_payloads += [{**desired(), 'can_add_to_basket_yn': value} for value in (None, 1, 'true')]
         for payload in invalid_payloads:
             with self.subTest(payload=payload), patch.object(source.transport, '_client') as client, \
                  self.assertRaises(source.SourceError):
