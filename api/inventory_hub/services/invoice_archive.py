@@ -260,10 +260,16 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         await db.execute(text('''INSERT INTO invoice_files(invoice_id,role,filename,file_path,file_type,sha256,size_bytes)
             VALUES(:invoice,:role,:filename,:file_path,:file_type,:sha256,:size_bytes)
             ON CONFLICT(invoice_id,sha256) DO NOTHING'''), {**file, 'invoice': identifier})
+    adopted_lines = (await db.scalar(text('SELECT count(*) FROM uploaded_invoice_lines WHERE invoice_id=:id'),
+        {'id': identifier})) if adopted else 0
+    # Promote a parsed upload to its supplier source key only with the same
+    # original bytes (proved above), source facts and exact number of rows.
+    retain_adopted_lines = bool(adopted_lines and adopted['source_hash'] == fingerprint
+                               and adopted_lines == len(parsed))
     if existing is None and not preserve_source:
-        if adopted and await db.scalar(text('SELECT count(*) FROM uploaded_invoice_lines WHERE invoice_id=:id'), {'id': identifier}):
+        if adopted_lines and not retain_adopted_lines:
             raise InvoiceArchiveError('invoice_archive_existing_lines')
-        for line in await _resolved_lines(db, parsed, supplier_id):
+        for line in ([] if retain_adopted_lines else await _resolved_lines(db, parsed, supplier_id)):
             await db.execute(text('''INSERT INTO uploaded_invoice_lines
                 (invoice_id,line_number,source_line_key,ean,barcode_values,supplier_sku,product_name,quantity,unit,
                  unit_price,total_price,vat_rate,unit_price_with_vat,total_price_with_vat,matched_product_id,matched_supplier_product_id,raw_data)

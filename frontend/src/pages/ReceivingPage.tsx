@@ -7,9 +7,10 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/Button.new';
 import { getInvoicesIndex, refreshInvoices, type InvoiceIndexItem, type RefreshResult } from '../api/invoices';
-import { listSuppliers, uploadInvoice, type SupplierSummary } from '../api/suppliers';
+import { listSuppliers, type SupplierSummary } from '../api/suppliers';
 import { createReceivingSession, resumeReceiving, getActiveSession, getReceivingSummary, lookupReceivingInvoice, type ReceivingInvoiceCandidate } from '../api/receiving';
 import { API_BASE } from '../api/client';
+import { InvoiceUploadModal } from '../components/InvoiceUploadModal';
 import { ReceivingResultsModal } from '../components/ReceivingResultsModal';
 import { duplicateReceivingLink, receivingSourceError } from '../features/receiving/sourceErrors';
 
@@ -99,8 +100,9 @@ export function ReceivingPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   
   // Upload state
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showUpload, setShowUpload] = useState(false);
+  const returnBatch = query.get('batch');
+  const returnTo = returnBatch ? `/receiving?batch=${encodeURIComponent(returnBatch)}` : '/receiving';
 
   const [scanCode, setScanCode] = useState('');
   const [scanBusy, setScanBusy] = useState(false);
@@ -308,26 +310,10 @@ export function ReceivingPage() {
     }
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setError(null);
-    setDuplicateLink(null);
-    try {
-      await uploadInvoice(supplier, file);
-      setSuccessMessage(`Faktúra ${file.name} bola nahraná`);
-      await handleRefreshList();
-    } catch (err: any) {
-      setError(receivingSourceError(err, t) || err?.message || t('receiving.sourceUploadFailed'));
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
   return (
     <div className="space-y-6">
+      <Link className="receiving-text-link" data-testid="receiving-back" to={returnTo}>{t('receiving.mixed.backToReceipt')}</Link>
+      <InvoiceUploadModal open={showUpload} initialSupplier={supplier} onClose={() => setShowUpload(false)} onUploaded={() => handleRefreshList()} />
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1
@@ -337,7 +323,7 @@ export function ReceivingPage() {
             color: 'var(--color-text-primary)',
           }}
         >
-          Príjem tovaru
+          {t('receiving.mixed.historyTitle')}
         </h1>
         <div className="flex gap-2">
           <Button
@@ -358,21 +344,14 @@ export function ReceivingPage() {
             <Download size={14} className={refreshing ? 'animate-spin' : ''} />
             {refreshing ? 'Sťahujem...' : 'Stiahnuť z webu'}
           </Button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={supplier === 'northfinder' ? '.xlsx,.xls,.pdf' : '.pdf'}
-            onChange={handleUpload}
-            className="hidden"
-          />
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
+            onClick={() => setShowUpload(true)}
+            disabled={loading}
           >
             <Upload size={14} />
-            {uploading ? t('common.loading') : t('receiving.uploadForReceipt')}
+            {t('receiving.uploadForReceipt')}
           </Button>
         </div>
       </div>
@@ -380,7 +359,7 @@ export function ReceivingPage() {
       <section className="rounded-xl border p-4 space-y-3" style={{ backgroundColor: 'var(--color-bg-secondary)', borderColor: 'var(--color-border-subtle)' }}>
         <form onSubmit={findScannedInvoice} className="flex flex-wrap items-end gap-3">
           <label className="flex-1 min-w-48 text-sm">{t('receiving.lookup.label')}
-            <input autoFocus data-testid="receiving-invoice-scan" value={scanCode} maxLength={100} disabled={scanBusy}
+            <input type="text" data-testid="receiving-invoice-scan" value={scanCode} maxLength={100} disabled={scanBusy}
               onChange={e => { setScanCode(e.target.value); setScanCandidates([]); }} placeholder={t('receiving.lookup.placeholder')} className="w-full mt-1" />
           </label>
           <Button type="submit" disabled={scanBusy || !scanCode.trim()}>{scanBusy ? t('common.loading') : t('receiving.lookup.find')}</Button>

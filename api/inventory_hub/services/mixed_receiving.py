@@ -88,6 +88,98 @@ async def _scans(db, batch_id):
         WHERE batch_id=:id ORDER BY created_at,id'''), {'id': batch_id})).mappings()]
 
 
+async def _manual_scans(db, batch_id):
+    return [dict(row) for row in (await db.execute(text('''SELECT * FROM mixed_receiving_manual_scans
+        WHERE batch_id=:id ORDER BY created_at,id'''), {'id': batch_id})).mappings()]
+
+
+async def _manual_product(db, code, expected_product_id=None):
+    from inventory_hub.services.product_identity import RemoteIdentity, load_identity_index
+    identity = RemoteIdentity(0, code.strip(), barcodes=(code.strip(),), expected_product_id=expected_product_id)
+    index = await load_identity_index(db, 0, [identity], local=True)
+    resolution = index.resolve(identity)
+    if resolution.status == 'conflict':
+        fail('receiving_identity_conflict', reasons=resolution.reasons,
+             candidate_product_ids=resolution.candidate_product_ids)
+    product = index.products.get(resolution.product_id)
+    if product is None or not product.is_active:
+        fail('receiving_product_preparation_required')
+    if product.item_type != 'stock':
+        fail('stock_item_required')
+    return product
+
+
+async def manual_product(db, batch_id, code):
+    await _batch(db, batch_id)
+    product = await _manual_product(db, code)
+    return {'product_id': product.id, 'sku': product.sku, 'title': product.name,
+            'stock_unit': product.stock_unit}
+
+
+async def manual_scan(db, batch_id, request, *, actor='receiving'):
+    payload_hash, previous = await _request(db, batch_id, request, 'manual_scan')
+    if previous:
+        return previous
+    batch = await _batch(db, batch_id, lock=True)
+    if batch['status'] != 'open' or batch['archived_at']:
+        fail('mixed_receiving_batch_closed')
+    await db.execute(text('SELECT pg_advisory_xact_lock(:key)'), {'key': IDENTITY_WRITE_LOCK})
+    product = await _manual_product(db, request.code)
+    try:
+        validate_stock_quantity(request.qty, product.stock_unit)
+    except ItemUnitError as error:
+        fail(error.code)
+    await db.execute(text('''INSERT INTO mixed_receiving_manual_scans
+        (id,batch_id,product_id,code,quantity,stock_unit,unit_cost,cost_status,reason,assignment_history)
+        VALUES(:id,:batch,:product,:code,:qty,:unit,:cost,:cost_status,:reason,CAST(:history AS jsonb))'''),
+        {'id': request.request_id, 'batch': batch_id, 'product': product.id, 'code': request.code.strip(),
+         'qty': request.qty, 'unit': product.stock_unit,
+         'cost': Decimal(request.unit_cost) if request.unit_cost is not None else None,
+         'cost_status': request.cost_status, 'reason': request.reason,
+         'history': encoded([{'action': 'manual_scan', 'actor': actor, 'confirmed_without_invoice': True,
+                             'at': datetime.now(timezone.utc).isoformat()}])})
+    result = {'request_id': str(request.request_id), 'scan_id': str(request.request_id), 'replayed': False,
+              'candidates': [], 'summary': await summary(db, batch_id)}
+    return await _save(db, batch_id, request.request_id, payload_hash, result)
+
+
+async def archive(db, batch_id, request, *, actor='receiving', restore=False):
+    kind = 'restore_batch' if restore else 'archive_batch'
+    payload_hash, previous = await _request(db, batch_id, request, kind)
+    if previous:
+        return previous
+    if restore:
+        scope = await _batch(db, batch_id)
+        if scope['status'] == 'open':
+            warehouse = await db.scalar(select(Warehouse).where(Warehouse.id == scope['warehouse_id'])
+                .with_for_update(read=True).execution_options(populate_existing=True))
+            if warehouse is None or not warehouse.is_active:
+                fail('mixed_receiving_warehouse_missing')
+    batch = await _batch(db, batch_id, lock=True)
+    if restore:
+        if not batch['archived_at']:
+            fail('mixed_receiving_not_archived')
+        await db.execute(text('''UPDATE mixed_receiving_batches
+            SET archived_at=NULL,archive_reason=NULL,archived_by=NULL WHERE id=:id'''), {'id': batch_id})
+    else:
+        if batch['archived_at']:
+            fail('mixed_receiving_archived')
+        scans = [row for row in [*await _scans(db, batch_id), *await _manual_scans(db, batch_id)]
+                 if row['status'] == 'active']
+        if request.empty_only and (batch['status'] != 'open' or scans):
+            fail('mixed_receiving_not_empty')
+        # A nonempty unfinished draft must first cancel its exact allocations.
+        # Archiving cannot release capacity silently or hide a pending receipt.
+        if batch['status'] == 'open' and scans:
+            fail('mixed_receiving_pending')
+        await db.execute(text('''UPDATE mixed_receiving_batches
+            SET archived_at=now(),archive_reason=:reason,archived_by=:actor WHERE id=:id'''),
+            {'id': batch_id, 'reason': request.reason, 'actor': actor})
+    result = {'request_id': str(request.request_id), 'batch_id': str(batch_id),
+              'archived': not restore, 'reason': request.reason, 'actor': actor, 'replayed': False}
+    return await _save(db, batch_id, request.request_id, payload_hash, result)
+
+
 async def _reserved(db, *, exclude_scan=None):
     return {row.line_id: row.quantity for row in (await db.execute(text('''
         SELECT s.line_id,SUM(s.quantity) AS quantity FROM mixed_receiving_scans s
@@ -133,7 +225,8 @@ async def create(db, request, *, actor='receiving'):
     if previous:
         return await summary(db, identifier)
     warehouse = await db.scalar(select(Warehouse).where(
-        Warehouse.code == request.warehouse_code if request.warehouse_code else Warehouse.is_default.is_(True)))
+        Warehouse.code == request.warehouse_code if request.warehouse_code else Warehouse.is_default.is_(True))
+        .with_for_update(read=True))
     if warehouse is None or not warehouse.is_active:
         fail('mixed_receiving_warehouse_missing')
     await db.execute(text('''INSERT INTO mixed_receiving_batches(id,warehouse_id,actor)
@@ -148,7 +241,9 @@ async def list_batches(db, status='open'):
         COUNT(s.id) FILTER(WHERE s.status='active') AS scan_count,
         COALESCE(SUM(s.quantity) FILTER(WHERE s.status='active'),0) AS total_qty
         FROM mixed_receiving_batches b JOIN warehouses w ON w.id=b.warehouse_id
-        LEFT JOIN mixed_receiving_scans s ON s.batch_id=b.id WHERE b.status=:status
+        LEFT JOIN (SELECT batch_id,id,status,quantity FROM mixed_receiving_scans
+            UNION ALL SELECT batch_id,id,status,quantity FROM mixed_receiving_manual_scans) s ON s.batch_id=b.id
+        WHERE b.status=:status AND b.archived_at IS NULL
         GROUP BY b.id,w.code ORDER BY b.created_at DESC LIMIT 100'''), {'status': status})).mappings()
     return {'batches': [{**dict(row), 'id': str(row['id']), 'created_at': row['created_at'].isoformat(),
                         'total_qty': number(row['total_qty'])} for row in rows]}
@@ -267,7 +362,7 @@ async def scan(db, batch_id, request, *, actor='receiving'):
     if previous:
         return previous
     batch = await _batch(db, batch_id, lock=True)
-    if batch['status'] != 'open':
+    if batch['status'] != 'open' or batch['archived_at']:
         fail('mixed_receiving_batch_closed')
     session, line, candidates = await _allocate(db, batch, request)
     await db.execute(text('''INSERT INTO mixed_receiving_scans(id,batch_id,code,quantity,session_id,line_id,posting_revision,assignment_history,candidates)
@@ -296,11 +391,20 @@ async def _change_scan(db, batch_id, scan_id, request, *, actor, cancel_scan):
     if previous:
         return previous
     batch = await _batch(db, batch_id, lock=True)
-    if batch['status'] != 'open':
+    if batch['status'] != 'open' or batch['archived_at']:
         fail('mixed_receiving_batch_closed')
     existing = next((s for s in await _scans(db, batch_id) if str(s['id']) == str(scan_id) and s['status'] == 'active'), None)
     if existing is None:
-        fail('mixed_receiving_scan_not_found')
+        manual = next((s for s in await _manual_scans(db, batch_id) if str(s['id']) == str(scan_id) and s['status'] == 'active'), None)
+        if manual is None or not cancel_scan:
+            fail('mixed_receiving_scan_not_found')
+        history = [*manual['assignment_history'], {'action': 'cancel', 'actor': actor,
+            'request_id': str(request.request_id), 'at': datetime.now(timezone.utc).isoformat()}]
+        await db.execute(text('''UPDATE mixed_receiving_manual_scans SET status='cancelled',
+            assignment_history=CAST(:history AS jsonb) WHERE id=:id'''), {'history': encoded(history), 'id': scan_id})
+        result = {'request_id': str(request.request_id), 'scan_id': str(scan_id), 'replayed': False,
+                  'summary': await summary(db, batch_id)}
+        return await _save(db, batch_id, request.request_id, payload_hash, result)
     # Lock all suppliers in one order before selecting the replacement.
     candidate_suppliers = (await db.execute(text('SELECT id FROM suppliers ORDER BY id'))).scalars().all()
     for supplier_id in candidate_suppliers:

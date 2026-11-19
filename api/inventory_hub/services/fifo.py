@@ -576,18 +576,32 @@ async def receipt_apply(db, identifier, payload):
         raise FifoError("fifo_preview_stale")
     balance = balances[product.id]
     data = batch.preview_data
-    await stock_tracking.activate(db, balance, source_type="fifo_receipt", source_id=batch.id,
+    result = await write_documented_receipt(db, balance, data, reference_type="fifo_receipt",
+        reference_id=batch.id, idempotency_key=f"fifo-receipt:{batch.id}")
+    batch.status, batch.completed_at, batch.result = "completed", now(), result
+    await db.flush()
+    await db.commit()
+    return result
+
+
+async def write_documented_receipt(db, balance, data, *, reference_type, reference_id, idempotency_key):
+    """Post one documented physical receipt under the caller's balance lock.
+
+    Reused by standalone FIFO receipts and atomic mixed batches. This function
+    does not commit and never treats an unknown acquisition cost as zero.
+    """
+    await stock_tracking.activate(db, balance, source_type=reference_type, source_id=reference_id,
                                  operator_name=data["operator_name"])
     quantity = Decimal(data["quantity"])
     cost = Decimal(data["unit_cost"]) if data["unit_cost"] is not None else None
     projected = await receipt_valuation(db, balance, quantity, cost, data["cost_status"])
     if projected is None:
         raise FifoError("fifo_cutover_required")
-    movement = StockMovement(idempotency_key=f"fifo-receipt:{batch.id}", product_id=product.id, warehouse_id=warehouse.id,
+    movement = StockMovement(idempotency_key=idempotency_key, product_id=balance.product_id, warehouse_id=balance.warehouse_id,
         movement_type=MovementType.RECEIVING_IN, quantity=quantity, unit_cost=cost,
         total_cost=money(quantity*cost) if cost is not None else None,
         unit_cost_original=cost, unit_cost_currency="EUR", fx_rate_to_eur=Decimal("1"),
-        reference_type="fifo_receipt", reference_id=batch.id, reference_source=data["source_reference"][:100],
+        reference_type=reference_type, reference_id=str(reference_id), reference_source=data["source_reference"][:100],
         balance_after=balance.qty_on_hand+quantity,
         avg_cost_after=Decimal(projected["avg_cost"]) if projected["avg_cost"] is not None else None,
         created_by=data["operator_name"], created_at=now())
@@ -596,16 +610,13 @@ async def receipt_apply(db, identifier, payload):
     balance.qty_on_hand += quantity
     layer = await add_receipt(db, balance, movement,
         datetime.fromisoformat(data["physical_received_at"].replace("Z", "+00:00")), cost, data["cost_status"],
-        {"kind": "documented_receipt", "receipt_id": batch.id, "source_reference": data["source_reference"],
+        {"kind": "documented_receipt", "receipt_id": str(reference_id), "source_reference": data["source_reference"],
          "operator_name": data["operator_name"], "unit_cost_at_receipt": data["unit_cost"],
          "cost_status_at_receipt": data["cost_status"]})
     balance.last_movement_at, balance.last_movement_id = movement.created_at, movement.id
     if balance.last_purchase_at is None or layer.physical_received_at >= balance.last_purchase_at:
         balance.last_purchase_price, balance.last_purchase_at = cost, layer.physical_received_at
-    result = {"receipt_id": batch.id, "movement_id": movement.id, "layer_id": layer.id,
-              "product_id": product.id, "warehouse_id": warehouse.id, "quantity": number(quantity),
+    result = {"receipt_id": str(reference_id), "movement_id": movement.id, "layer_id": layer.id,
+              "product_id": balance.product_id, "warehouse_id": balance.warehouse_id, "quantity": number(quantity),
               "valuation": await valuation(db, balance), "completed_at": now().isoformat()}
-    batch.status, batch.completed_at, batch.result = "completed", now(), result
-    await db.flush()
-    await db.commit()
     return result

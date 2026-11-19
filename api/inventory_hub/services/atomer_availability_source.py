@@ -216,8 +216,12 @@ def apply_admin(buyers, raw, complete):
     return result
 
 
-def desired_values(row, quantity, offer):
+def desired_values(row, quantity, offer, override=None):
     """Known own pieces win; unknown own stock must not become a zero."""
+    override = {k: v for k, v in (override or {}).items() if k in ("label", "visible")}
+    if quantity is None and override:
+        return (override.get("visible", row["current_visibility"]),
+                override.get("label", row["current_availability"]), None)
     if quantity is None:
         return (
             row["current_visibility"],
@@ -231,13 +235,16 @@ def desired_values(row, quantity, offer):
     if not qty.is_finite() or qty < 0:
         return row["current_visibility"], row["current_availability"], "stock_invalid"
     if qty > 0:
-        return True, "SKLADOM", None
-    label = (
-        offer.get("label", "do 5 dní")
-        if offer.get("fresh") and offer.get("available") is True
-        else "overíme"
-    )
-    return row["current_visibility"], label, None
+        return override.get("visible", True), override.get("label", "SKLADOM"), None
+    visibility = override.get("visible", row["current_visibility"])
+    if "label" in override:
+        return visibility, override["label"], None
+    if offer.get("fresh") and offer.get("available") is not None:
+        label = offer.get("label") or ("do 5 dní" if offer["available"] else "overíme")
+        return visibility, label, None
+    # Missing, expired or contradictory evidence must not rewrite a known shop
+    # promise into a fallback. Operators can still choose a registered value.
+    return visibility, row["current_availability"], "supplier_evidence_unknown"
 
 
 def assemble(source, projections, selected_ids=None):
@@ -263,6 +270,14 @@ def assemble(source, projections, selected_ids=None):
             qty_available=state.get("quantity"),
             proposed_visibility=row["current_visibility"],
             proposed_availability=row["current_availability"],
+            include_in_export=True,
+            manual_override=any(k in (state.get("availability_override") or {}) for k in ("label", "visible")),
+            availability_override=state.get("availability_override"),
+            apply_to_every_export=False,
+            supplier_status=state.get("offer", {}).get("status"),
+            supplier_reason=state.get("offer", {}).get("reason"),
+            supplier_source=state.get("offer", {}).get("source"),
+            warnings=[],
         )
         if row["reasons"]:
             row["status"] = "blocked"
@@ -274,9 +289,12 @@ def assemble(source, projections, selected_ids=None):
             row["reasons"] = [state["reason"]]
         else:
             visibility, label, error = desired_values(
-                row, state.get("quantity"), state.get("offer", {})
+                row, state.get("quantity"), state.get("offer", {}), state.get("availability_override")
             )
             row.update(proposed_visibility=visibility, proposed_availability=label)
+            if error == "supplier_evidence_unknown":
+                row["warnings"] = [error]
+                error = None
             if error:
                 row["status"] = "blocked"
                 row["reasons"] = [error]
@@ -318,11 +336,16 @@ def assemble(source, projections, selected_ids=None):
             proposed_visibility=parent["current_visibility"],
             proposed_availability=parent["current_availability"],
             status="context",
+            include_in_export=True,
+            manual_override=False,
+            apply_to_every_export=False,
+            warnings=[],
         )
         enable = any(
             c["status"] not in ("blocked", "unmatched")
-            and c.get("qty_available") is not None
-            and Decimal(c["qty_available"]) > 0
+            and c["proposed_visibility"] is True
+            and ((c.get("qty_available") is not None and Decimal(c["qty_available"]) > 0)
+                 or (c.get("availability_override") or {}).get("visible") is True)
             for c in children
         )
         if (
@@ -366,4 +389,8 @@ def summarize(rows):
         blocked=counts["blocked"],
         unmatched=counts["unmatched"],
         unchanged=counts["unchanged"],
+        exportable=sum(r["status"] == "changed" and r.get("include_in_export", True) for r in rows),
+        excluded=sum(not r.get("include_in_export", True) for r in rows),
+        warning_rows=sum(bool(r.get("warnings")) for r in rows),
+        manual_overrides=sum(bool(r.get("manual_override")) for r in rows),
     )

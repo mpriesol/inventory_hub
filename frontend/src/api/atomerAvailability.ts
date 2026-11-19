@@ -16,7 +16,7 @@ export interface AtomerAvailabilityRun {
   trigger: string; created_at: string; source_fetched_at: string | null; source_sha256: string | null;
   completed_at: string | null; error: string | null; download_available: boolean;
   receiving_batch_id?: string | null; warehouse_code?: string;
-  summary: { total: number; changed: number; blocked: number; unmatched: number };
+  summary: { total: number; changed: number; blocked: number; unmatched: number; exportable?: number };
   warnings?: string[];
   coverage?: { kind: 'buyers_only' | 'admin_partial' | 'admin_complete'; hidden_rows: number; missing_parents: number; source_blocked_rows?: number; admin_source_at?: string | null };
   missing_products?: { id: number; sku: string; name: string }[];
@@ -28,11 +28,29 @@ export interface AtomerAvailabilityRow {
   current_visibility: boolean | null; current_availability: string;
   proposed_visibility: boolean | null; proposed_availability: string; qty_available: string | null;
   status: 'changed' | 'unchanged' | 'blocked' | 'unmatched' | 'context'; reasons: string[];
+  editable?: boolean; matches_filter?: boolean; include_in_export?: boolean; manual_override?: boolean; apply_to_every_export?: boolean;
+  supplier_status?: string | null; supplier_reason?: string | null; supplier_source?: string | null; warnings?: string[];
+  availability_override?: { label?: string; visible?: boolean; source?: string; updated_at?: string; actor?: string } | null;
 }
 export type AtomerAvailabilityView = 'all' | 'changes' | 'issues';
+export interface AtomerAvailabilityFilter {
+  view: AtomerAvailabilityView; search?: string; kind?: 'all' | 'parent' | 'variant' | 'standalone';
+  status?: 'all' | AtomerAvailabilityRow['status']; visibility?: 'all' | 'visible' | 'hidden' | 'unknown';
+  availability?: string | null; current_availability?: string | null; current_visibility?: 'all' | 'visible' | 'hidden' | 'unknown';
+  include_in_export?: boolean | null; manual_override?: boolean | null;
+}
+export type AtomerAvailabilitySort = 'code' | 'name' | 'sku' | 'ean' | 'current_availability' | 'proposed_availability'
+  | 'current_visibility' | 'proposed_visibility' | 'qty_available' | 'status' | 'include_in_export' | 'manual_override';
+export interface AtomerAvailabilityQuery extends AtomerAvailabilityFilter { sort?: AtomerAvailabilitySort; direction?: 'asc' | 'desc' }
+export interface AtomerAvailabilitySelection { codes?: string[]; all_filtered?: boolean; filter?: AtomerAvailabilityFilter; excluded_codes?: string[] }
+export interface AtomerAvailabilityChanges { visibility?: boolean; availability?: string; include_in_export?: boolean; apply_to_every_export?: boolean }
+export interface AtomerAvailabilityEdit {
+  request_id: string; expected_revision: number; selection: AtomerAvailabilitySelection; changes: AtomerAvailabilityChanges;
+}
+export interface AtomerAvailabilityEditResult { id: string; request_id: string; revision: number; updated: number; skipped: number; skipped_persistent: number }
 export interface AtomerAvailabilityDetail extends AtomerAvailabilityRun {
   rows: AtomerAvailabilityRow[]; total: number; offset: number; limit?: number; view: AtomerAvailabilityView;
-  availability_options?: string[];
+  availability_options?: string[]; matched_total?: number; selectable_total?: number; filter_options?: { availability: string[] };
 }
 export interface AtomerAvailabilityOverride { code: string; visibility?: boolean; availability?: string }
 export interface AtomerAvailabilityExport { expected_revision: number; overrides: AtomerAvailabilityOverride[] }
@@ -58,14 +76,27 @@ export function uploadAtomerAvailabilityAdmin(file: File, complete: boolean) {
 }
 export const listAtomerAvailabilityRuns = (signal?: AbortSignal) => hubRequest<{ items: AtomerAvailabilityRun[] }>(`${base}/runs`, undefined, signal);
 export const createAtomerAvailabilityRun = async (body: AtomerAvailabilityCreate) => checkedRun(await hubRequest<AtomerAvailabilityRun>(`${base}/runs`, body), body.request_id);
-export const getAtomerAvailabilityRun = async (id: string, offset = 0, signal?: AbortSignal, view: AtomerAvailabilityView = 'all') => {
-  const value = await hubRequest<AtomerAvailabilityDetail>(`${base}/runs/${encodeURIComponent(id)}?offset=${offset}&limit=100&view=${view}`, undefined, signal);
+export const getAtomerAvailabilityRun = async (id: string, offset = 0, signal?: AbortSignal, query: AtomerAvailabilityQuery | AtomerAvailabilityView = 'all') => {
+  const filter = typeof query === 'string' ? { view: query } : query;
+  const params = new URLSearchParams({ offset: String(offset), limit: '100', view: filter.view });
+  for (const [key, item] of Object.entries(filter)) if (item !== undefined && item !== null && item !== '') params.set(key, String(item));
+  const value = await hubRequest<AtomerAvailabilityDetail>(`${base}/runs/${encodeURIComponent(id)}?${params}`, undefined, signal);
   checkedRun(value, id);
-  if (!Array.isArray(value.rows) || value.offset !== offset || value.view !== view || !Number.isSafeInteger(value.total) || value.total < 0) {
+  if (!Array.isArray(value.rows) || value.offset !== offset || value.view !== filter.view || !Number.isSafeInteger(value.total) || value.total < 0) {
     throw new CatalogApiError('atomer_availability_response_invalid', 'The response does not match this preview page');
   }
   return value;
 };
+function checkedEdit(value: AtomerAvailabilityEditResult, id: string, requestId: string) {
+  if (!value || value.id !== id || value.request_id !== requestId || !Number.isSafeInteger(value.revision) || value.revision < 1) {
+    throw new CatalogApiError('atomer_availability_response_invalid', 'The response does not match this edit');
+  }
+  return value;
+}
+export const editAtomerAvailabilityRun = async (id: string, body: AtomerAvailabilityEdit) =>
+  checkedEdit(await hubRequest<AtomerAvailabilityEditResult>(`${base}/runs/${encodeURIComponent(id)}/edit`, body), id, body.request_id);
+export const getAtomerAvailabilityEdit = async (id: string, requestId: string, signal?: AbortSignal) =>
+  checkedEdit(await hubRequest<AtomerAvailabilityEditResult>(`${base}/runs/${encodeURIComponent(id)}/edits/${encodeURIComponent(requestId)}`, undefined, signal), id, requestId);
 export const exportAtomerAvailabilityRun = async (id: string, body: AtomerAvailabilityExport) => {
   const value = checkedRun(await hubRequest<AtomerAvailabilityRun>(`${base}/runs/${encodeURIComponent(id)}/export`, body), id);
   if (value.status !== 'exported') throw new CatalogApiError('atomer_availability_response_invalid', 'CSV creation was not confirmed');

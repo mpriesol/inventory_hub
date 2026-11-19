@@ -2,8 +2,8 @@
 // Complete suppliers management page with editor, history, and validation
 
 import { ZookeeCodeReconciliation } from '../components/ZookeeCodeReconciliation';
-import { receivingSourceError } from '../features/receiving/sourceErrors';
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { InvoiceUploadModal } from '../components/InvoiceUploadModal';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -45,7 +45,6 @@ import {
   getSupplierHistoryVersion,
   restoreSupplierVersion,
   validateSupplierConfig,
-  uploadInvoice,
   deleteSupplier,
   SupplierSummary,
   SupplierConfig,
@@ -337,8 +336,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
   const [validating, setValidating] = useState(false);
 
   // Upload state
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showInvoiceUpload, setShowInvoiceUpload] = useState(false);
 
   // Load config
   useEffect(() => {
@@ -445,25 +443,6 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
       setSelectedHistoryVersion(version);
     } catch (err: any) {
       setError(err.message);
-    }
-  };
-
-  // Handle file upload
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setUploading(true);
-    try {
-      await uploadInvoice(code, file);
-      alert(`Súbor ${file.name} bol úspešne nahraný`);
-    } catch (err: any) {
-      setError(receivingSourceError(err, t) || err.message);
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
     }
   };
 
@@ -697,8 +676,8 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
               config={config}
               updateConfig={updateConfig}
               showPasswords={showPasswords}
-              onUpload={() => fileInputRef.current?.click()}
-              uploading={uploading}
+              onUpload={() => setShowInvoiceUpload(true)}
+              uploading={false}
             />
           )}
           {activeTab === 'mapping' && (
@@ -723,14 +702,7 @@ function SupplierEditor({ code, onClose, onSaved }: SupplierEditorProps) {
           )}
         </div>
 
-        {/* Hidden file input */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={code === 'northfinder' ? '.xlsx,.xls,.pdf' : '.pdf'}
-          onChange={handleFileUpload}
-          className="hidden"
-        />
+        <InvoiceUploadModal open={showInvoiceUpload} initialSupplier={code} onClose={() => setShowInvoiceUpload(false)} />
       </div>
     </div>
   );
