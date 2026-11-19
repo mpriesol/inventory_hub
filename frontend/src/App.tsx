@@ -15,6 +15,7 @@ import { ProductTracePage } from './pages/ProductTracePage';
 import { ProductImportPage } from './pages/ProductImportPage';
 import { FeedMappingPage } from './pages/FeedMappingPage';
 import { SlogerProbePage } from './pages/SlogerProbePage';
+import { SkuBrandsPage } from './pages/SkuBrandsPage';
 import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, Navigate } from 'react-router-dom';
 
 // Styles
@@ -92,6 +93,7 @@ const router = createBrowserRouter(createRoutesFromElements(
           <Route path="/settings/users" element={<AccountPage />} />
           {/* Settings */}
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/sku-brands" element={<SkuBrandsPage />} />
           <Route path="/settings/availability" element={<AvailabilitySyncPage />} />
           <Route path="/settings/attention" element={<AttentionCenter />} />
           <Route path="/settings/logs" element={<OperationLogsPage />} />

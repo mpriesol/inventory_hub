@@ -18,6 +18,8 @@ const React = require('react'); const { act } = React;
 const { createRoot } = require('react-dom/client');
 const { createMemoryRouter, RouterProvider } = require('react-router-dom');
 const { ProductImportPage } = require('../src/pages/ProductImportPage.tsx');
+const { SkuBrandsPage } = require('../src/pages/SkuBrandsPage.tsx');
+const { SettingsPage } = require('../src/pages/PlaceholderPages.tsx');
 const { unlockHub } = require('../src/api/access.ts');
 const { IMPORT_COLUMNS, pasteImportValues, stageImportValue } = require('../src/pages/productImportGrid.ts');
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -26,15 +28,23 @@ const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, 
 const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: ['https://images.example.test/item.jpg'], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
 let recentItems = null;
+const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: ['Topeak'] },
+  { id: 2, code: 'BB', name: 'BBB Cycling', kind: 'brand', aliases: ['BBB Cycling', 'BBB'] }];
+const registryBrand = name => skuBrands.find(brand => [brand.name, ...brand.aliases].includes(name));
 const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false;
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, method: init.method || 'GET', body });
-  if (path === '/api/sku-policy/brands') return {ok:true,status:200,json:async()=>({brands:[{id:1,code:'TP',name:'Topeak',kind:'brand',aliases:[]}]})};
+  if (path === '/api/sku-policy/brands') return { ok: true, status: 200, json: async () => ({ brands: skuBrands }) };
   if (path === '/api/sku-policy/preview') {
-    const item=body.sku_identity;
-    const verified=!!(item?.brand&&item.source_code&&item.code_kind==='manufacturer'&&item.leaf_confirmed&&item.source_ref);
-    return {ok:true,status:200,json:async()=>({status:verified?'new':'blocked',sku:item?'TP-'+item.source_code:null,product_id:null,brand_id:1,reasons:verified?[]:['sku_manufacturer_code_unverified'],candidate_product_ids:[]})};
+    const identity = body.sku_identity;
+    const brand = registryBrand(identity?.brand);
+    const verified = !!(brand && identity.leaf_confirmed && identity.source_code && identity.code_kind === 'manufacturer');
+    const reasons = !identity ? ['sku_identity_required'] : !brand ? ['sku_brand_unregistered'] : verified ? [] : ['sku_manufacturer_code_unverified'];
+    return { ok: true, status: 200, json: async () => ({
+      status: verified ? 'new' : 'blocked', sku: verified ? brand.code + '-' + identity.source_code : null,
+      product_id: null, brand_id: brand?.id ?? null, reasons, candidate_product_ids: [],
+    }) };
   }
   if (path === '/api/ai-content/rules') return { ok: true, status: 200, json: async () => ({book:{categories:[{id:'general',name:'Všeobecné'},{id:'inner_tubes',name:'Duše'}]}}) };
   if (path === '/api/product-imports/test-draft' && init.method === 'GET' && deferRead) {
@@ -51,7 +61,19 @@ global.fetch = async (path, init = {}) => {
     assert.deepEqual(body.product_ids, [1, 2, 3]); assert.equal(body.run_id, 42); assert.ok(body.request_id);
   } else if (path === '/api/product-imports/test-draft' && init.method === 'PUT') {
     assert.equal(body.expected_revision, server.revision);
-    for (const patch of body.rows) { const row = server.rows.find(item => item.id === patch.id); Object.assign(row.values, patch.values); if (patch.values.sku_identity) row.values.code='TP-'+patch.values.sku_identity.source_code; Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; }); }
+    for (const patch of body.rows) {
+      const row = server.rows.find(item => item.id === patch.id);
+      Object.assign(row.values, patch.values);
+      const identity = patch.values.sku_identity;
+      if (identity?.leaf_confirmed) {
+        const brand = registryBrand(identity.brand);
+        assert(brand);
+        row.values.code = brand.code + '-' + identity.source_code;
+        row.sku_preview = { status: 'new', sku: row.values.code, reasons: [], candidate_product_ids: [], brand_id: brand.id };
+        row.hub_errors = (row.hub_errors || []).filter(code => code !== 'sku_identity_required');
+      }
+      Object.keys(patch.values).forEach(field => { row.manual_fields.push(field); row.provenance[field] = 'manual'; });
+    }
     server.revision++; server.status = 'draft'; server.publication = null; server.publication_result = null;
   } else if (path.endsWith('/categories-refresh')) {
     assert.equal(body.expected_revision, server.revision);
@@ -87,7 +109,13 @@ async function change(element, value) { assert.ok(element); await act(async () =
 async function key(element, value) { await act(async () => element.dispatchEvent(new window.KeyboardEvent('keydown', { key: value, bubbles: true }))); }
 async function paste(element, text) { await act(async () => { const event = new window.Event('paste', { bubbles: true, cancelable: true }); Object.defineProperty(event, 'clipboardData', { value: { getData: () => text } }); element.dispatchEvent(event); }); }
 async function render(entry) {
-  const router = createMemoryRouter([{ path: '/product-import', element: React.createElement(ProductImportPage) }, { path: '/suppliers/:supplier/catalog', element: React.createElement('p', null, 'Catalog') }, { path: '/receiving/:invoiceId', element: React.createElement('p', { 'data-testid': 'return-receiving' }, 'Invoice receipt') }], { initialEntries: [entry] });
+  const router = createMemoryRouter([
+    { path: '/product-import', element: React.createElement(ProductImportPage) },
+    { path: '/suppliers/:supplier/catalog', element: React.createElement('p', null, 'Catalog') },
+    { path: '/receiving/:invoiceId', element: React.createElement('p', { 'data-testid': 'return-receiving' }, 'Invoice receipt') },
+    { path: '/settings', element: React.createElement(SettingsPage) },
+    { path: '/settings/sku-brands', element: React.createElement(SkuBrandsPage) },
+  ], { initialEntries: [entry] });
   await act(async () => root.render(React.createElement(React.StrictMode, null, React.createElement(RouterProvider, { key: typeof entry === 'string' ? entry : 'new', router }))));
   return router;
 }
@@ -542,6 +570,8 @@ async function render(entry) {
   assert.equal(proof.supplier_id,8); assert.equal(proof.supplier_sku,'SUP-900'); assert.equal(proof.sku_identity.source_code,'0001410'); assert.equal(proof.sku_identity.code_kind,'manufacturer'); assert.equal(proof.sku_identity.leaf_confirmed,true); assert.equal(proof.sku_identity.source_ref,'operator:manufacturer-code');
   await click(dialog.querySelector('[data-testid="import-sku-apply"]'));
   assert.equal(document.querySelector('[role="dialog"]'),null);
+  assert.equal(server.rows[0].values.code, 'TP-0001410', 'SKU confirmation immediately saves the server-allocated code to the draft');
+  assert(!calls.slice(beforeIdentity).some(call => call.path.endsWith('/save')), 'Saving the SKU does not create a Hub card');
   assert(!button('Uložiť produkty do Hubu').disabled,'A basic card is savable despite missing shop price/VAT');
   await click(button('Uložiť produkty do Hubu'));
   assert.equal(server.rows[0].values.code,'TP-0001410');
@@ -587,7 +617,7 @@ async function render(entry) {
     await click(document.querySelector('[data-testid="import-sku-apply"]'));
     assert(field(3,'manufacturer_code').textContent.includes('DIALOG-00043'),'Applying an explicit dialog code also updates its table field');
     await click(document.querySelector('[data-testid="import-sku-3"]'));
-    assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'DIALOG-00043','An intentional unsaved dialog choice survives reopening');
+    assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'DIALOG-00043','A saved dialog correction survives reopening');
     assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').checked);
     await key(document.querySelector('[role="dialog"]'),'Escape');
     await click(button('Uložiť produkty do Hubu'));
@@ -611,6 +641,62 @@ async function render(entry) {
   await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
   const lookup=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body;
   assert.equal(lookup.sku_identity,null); assert.equal(lookup.supplier_sku,'SUP-900','The scoped supplier code still supports existing-card lookup');
+
+  server = { ...server, status: 'draft', supplier: 'sk-profi-bike', identity_review_required: true, identity_review_count: 1, rows: [{
+    ...clone(initial[2]), values: { ...values(3), item_type: 'stock', code: 'SKP-FIXTURE', supplier_code: 'SUP-123',
+      brand: 'BBB', manufacturer_code: '', ai_enabled: true },
+    hub_errors: ['sku_identity_required'], ai_job: {
+      id: 'already-applied', error: 'import_identity_review_required', status: 'import_blocked',
+      staging: { ai_applied: true, profile_matches: true },
+    },
+  }] };
+  await render('/product-import?draft=test-draft&case=bbb-sku');
+  assert(document.body.textContent.includes(i18n.t('skuPolicy.draftNeedsCode')));
+  assert(button('Pripraviť import').disabled, 'Applied AI still waits for the stock-card review');
+  const beforeBbb = calls.length;
+  await click(document.querySelector('[data-testid="import-sku-3"]'));
+  assert.equal(document.activeElement.dataset.testid, 'sku-source-code', 'Focus starts at the missing code');
+  assert(document.querySelector('[role="dialog"]').textContent.includes('Prefix BB · BBB Cycling'));
+  assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').disabled);
+  await click(button(i18n.t('skuPolicy.registry.title')));
+  const brandSearch = document.querySelector('.sku-brand-search input');
+  await change(brandSearch, 'BB');
+  const table = document.querySelector('.sku-brand-table');
+  assert.deepEqual([...table.querySelectorAll('tbody tr')].map(row => row.querySelector('code').textContent), ['BB']);
+  await click(label(i18n.t('skuPolicy.registry.chooseName', { name: 'BBB Cycling' })));
+  assert.equal(document.querySelector('[data-testid="sku-brand"]').value, 'BBB Cycling');
+  await change(document.querySelector('[data-testid="sku-source-code"]'), 'BTL-78');
+  await click(document.querySelector('[data-testid="sku-leaf-confirmed"]'));
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  const saveSku = () => document.querySelector('[data-testid="import-sku-apply"]');
+  assert(document.querySelector('[data-testid="sku-preview"]').textContent.includes('BB-BTL-78'));
+  failEdit = true;
+  await click(saveSku());
+  assert(document.querySelector('[role="dialog"] [role="alert"]'), 'A rejected draft write is reported in the open SKU dialog');
+  assert.equal(document.querySelector('[data-testid="sku-source-code"]').value, 'BTL-78');
+  assert.equal(server.rows[0].values.code, 'SKP-FIXTURE');
+  failEdit = false;
+  await act(async () => new Promise(resolve => setTimeout(resolve, 300)));
+  await click(saveSku());
+  assert.equal(document.querySelector('[role="dialog"]'), null);
+  assert(document.querySelector('tr[data-row="3"] .import-code').textContent.includes('BB-BTL-78'));
+  assert.equal(server.rows[0].values.supplier_code, 'SUP-123');
+  assert(!document.body.textContent.includes(i18n.t('skuPolicy.draftNeedsCode')));
+  assert(button(i18n.t('productImport.prepareImport')).disabled, 'Saving the SKU does not dismiss duplicate review');
+  server.identity_review_required = false;
+  await click(button('Obnoviť'));
+  await click(button('Pripraviť import'));
+  assert.deepEqual(calls.slice(beforeBbb).filter(call => call.path.startsWith('/api/product-imports') && call.method === 'POST')
+    .map(call => call.path.split('/').at(-1)), ['save', 'publish-preview'],
+  'After identity review, an applied AI result can reach publication preview without regenerating or sending it');
+
+  const beforeRegistry = calls.length;
+  await render('/settings');
+  await click(document.querySelector('a[href="/settings/sku-brands"]'));
+  await change(document.querySelector('.sku-brand-search input'), 'topeak');
+  assert.deepEqual([...document.querySelectorAll('.sku-brand-table tbody code')].map(code => code.textContent), ['TP']);
+  assert(calls.slice(beforeRegistry).some(call => call.path === '/api/sku-policy/brands' && call.method === 'GET'));
+  assert(calls.slice(beforeRegistry).every(call => call.method === 'GET'), 'The settings register only reads manufacturer data');
   await act(async () => root.unmount());
   console.log('Product import UI passed: durable drafts, CAS preservation, family propagation, persisted/bulk AI rule profiles, multiline TSV, selected bulk changes, safe HTML display, mixed AI estimates/results, explicit Hub save and shop publication.');
 })().catch(error => { console.error(error); process.exitCode = 1; root.unmount(); });

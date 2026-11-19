@@ -52,6 +52,12 @@ výrobok a nestará sa o jeho jedinečnosť. Dodávateľský kód sa nezmení a 
 
 ## Ručné overenie a existujúce produkty
 
+**Nastavenia → Výrobcovia a prefixy SKU** zobrazujú aktuálny register s
+vyhľadávaním podľa názvu, prefixu a aliasov. V príprave produktov je rovnaká
+tabuľka dostupná cez **Nastaviť SKU**. Z nej možno vybrať existujúceho výrobcu
+a vo formulári overiť jeho prefix. Chýbajúci kód a chýbajúca registrácia
+výrobcu majú samostatné hlásenia.
+
 Bez potvrdeného výrobného poľa možno pri príprave novej karty skontrolovať
 výrobcu, opraviť výrobný kód a výslovne potvrdiť konkrétny variant/balenie.
 Jednoduchý formulár uchová operátorské potvrdenie; nevydáva ho za dokumentáciu
