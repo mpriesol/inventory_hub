@@ -4,7 +4,7 @@
 
 V obrazovke **Dostupnosti a synchronizácia** má každý dodávateľ samostatný zdroj, interval sťahovania, platnosť údajov a vypínač automatického načítavania. Nové nastavenia sú vypnuté. Najprv vyberte nakonfigurovaný feed a uložte nastavenia; potom môžete spustiť načítanie ručne aj bez zapnutia automatiky. Spustenie zaradí úlohu do frontu. Obrazovka zobrazuje prebiehajúci beh, posledný úspech, chybu a ďalší termín.
 
-Interval je od 5 minút po 7 dní. Platnosť údajov musí pokryť aspoň jeden interval; najviac môže byť 30 dní. Predvolené hodnoty sú 1 hodina a 6 hodín. Čas posledného úspechu je začiatok prijatého načítania, nie okamih neskoršieho uloženia. Pri staršom feede tak údaje nedostanú umelo dlhšiu platnosť.
+Interval je od 5 minút po 7 dní. Platnosť údajov musí pokryť aspoň jeden interval; najviac môže byť 30 dní. Predvolený interval je 24 hodín a údaje platia 48 hodín. Čas posledného úspechu je začiatok prijatého načítania, nie okamih neskoršieho uloženia. Pri staršom feede tak údaje nedostanú umelo dlhšiu platnosť.
 
 **Minimálne pokrytie** kontroluje pokles počtu riadkov. Nevie dokázať úplnosť prvého feedu ani zachytiť všetky výmeny položiek pri nezmenenom počte. Predvolene musí nový feed obsahovať aspoň 100 % počtu položiek z posledného úplného behu. Ak dodávateľ zúži ponuku, po overení môžete znížiť prah a spustiť nový pokus. Pri podlimitnom feede sa prijmú použiteľné riadky a absencia ostatných zostane nepotvrdená.
 
@@ -17,6 +17,8 @@ Po neúspešnom načítaní automatika odloží zmeny odvodené z dodávateľsk�
 Dostupnosť dodávateľa je oddelená od fyzického skladu. Hodnota `6+` znamená najmenej šesť kusov, údaj áno/nie vyjadruje dostupnosť bez presného počtu. Ani jeden nevytvára príjem alebo vlastnú zásobu. Na e-shop sa publikuje iba vlastné overené voľné množstvo; dodávateľ môže ovplyvniť dodaciu dostupnosť.
 
 Text dodacej dostupnosti sa upravuje v konfigurácii konkrétneho dodávateľa v `adapter_settings.availability.orderable`. Ak chýba, použije sa **do 5 dní**. Vlastná voľná zásoba má prednosť a výsledok je **SKLADOM**. Keď je vlastné overené voľné množstvo nulové a čerstvý dodávateľ potvrdí dostupnosť, použije sa jeho nastavený text. Bez takého potvrdenia sa použije **overíme**; zákazník stále môže objednať. Zlyhanie sťahovania nie je dôkaz nulovej zásoby.
+
+Pri [príprave nového produktu](product-imports.md) Hub vyhľadá posledný platný údaj pre konkrétny dodávateľský kód, aj keď skladová karta ešte nevznikla. Ak má dodávateľ zvolený skladový feed, jeho potvrdené množstvo má prednosť pred údajom v produktovom katalógu. Pri variantoch sa kontroluje každý kód osobitne.
 
 Pri viacerých dodávateľoch sa použije prvý čerstvý dostupný zdroj podľa primárneho zdroja a priority. Vypnuté alebo neobjednateľné väzby sa nepoužijú. Samotné vypnutie automatického sťahovania neruší už získané údaje; tie dožijú svoju platnosť.
 

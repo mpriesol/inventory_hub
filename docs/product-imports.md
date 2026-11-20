@@ -32,6 +32,12 @@ the AI content already saved in the draft.
 
 An automatically recognized but unsaved existing card can also be explicitly marked **Použiť iba dodávateľskú väzbu** in identity review (enable **Zobraziť aj nové a už prepojené položky**). This keeps the verified match fixed and excludes that leaf from new family grouping and shop publication. It is useful when a supplier family includes a card already sold as a standalone product. The choice only saves the draft decision; the subsequent Hub save adds the supplier association using the reviewed evidence hash and preserves the existing SKU, grouping, merchandising, prices and physical stock. Changed evidence requires a fresh review. Saved cards and conflicting identities cannot use this action.
 
+## Supplier delivery time during product creation
+
+For BIKETREK and xTrek, product preparation reads the latest synchronized stock evidence for the exact supplier and its native item code. Each variant has its own delivery time. A fresh positive observation from the configured availability feed uses that supplier’s orderable label, even when the product listing shows zero. A fresh zero uses the supplier’s unavailable label when configured. Missing or expired evidence uses the unknown label. An item confirmed absent from a complete feed uses the supplier’s missing-item rule.
+
+Suppliers using only a product catalog can use its current, dated stock information. Sloger and Husky keep their authenticated source requirements. Opening an editable draft recalculates automatic availability. A manual availability edit keeps its value. The completed import retains the values that were sent.
+
 ## Sloger B2B before import preparation
 
 Sloger listing feeds provide the product catalog and DMOC; the authenticated B2B site supplies current purchase quotes, EANs, manufacturer code and availability. Creating a normal Sloger draft starts this source step automatically, regardless of its AI checkboxes. It uses the login saved in the supplier settings and does not call an AI model or consume AI budget.
@@ -48,7 +54,7 @@ For Sloger product families, the B2B reader matches the exact supplier SKU in th
 
 AI is optional after this source phase and uses the model selected in Hub settings. Existing saved drafts, user edits and historical AI results are not rewritten by a later B2B refresh. There is no independent paid B2B test action in this workflow.
 
-The frozen supplier observation includes its expiry. A publication preview treats expired automatically derived availability as unknown; an explicit manual availability edit remains an operator choice. If a preview's positive supplier availability expires before confirmation or its first remote write, publication stops and requires a fresh preview. The fresh-preview action is available after a queued failure only when every target's durable journal proves that no product write was attempted and expiry is the sole failure. Previous preview IDs remain in the draft history. It never silently changes a confirmed payload or replaces an already attempted/uncertain write.
+A publication preview freezes the delivery text for each leaf and the validity of time-limited source evidence. Before creating the product in the shop, the worker checks the automatic text again. If the delivery text changes or its evidence expires, prepare a fresh preview. After a queued availability failure, this action requires every target’s journal to prove that no product write was attempted. Previous preview IDs remain in draft history. An uncertain write follows its existing readback and recovery path.
 
 ## Per-product shop selection (12 October 2026)
 

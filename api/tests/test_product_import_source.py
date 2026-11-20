@@ -123,47 +123,19 @@ class ProductImportSourceTests(unittest.TestCase):
         item.document['source_lookup']['state'] = 'completed'
         product_import.assert_editable(item)
 
-    def test_expired_preview_downgrades_only_derived_availability(self):
-        item = draft()
-        target = item.document['rows'][0]
-        target['source']['sloger_observation'] = observation().model_dump(mode='json')
-        target['source']['supplier_available'] = True
-        target['source']['supplier_observation_expires_at'] = (ai_content.now() - timedelta(seconds=1)).isoformat()
-        target['values']['availability'] = 'do 2-4 dní'
-        frozen = deepcopy(target)
-        deadline = source.prepare_availability([target], {'unknown': 'overíme'})
-        self.assertIsNone(deadline)
-        self.assertEqual(target['values']['availability'], 'overíme')
-        frozen['manual_fields'] = ['availability']
-        source.prepare_availability([frozen], {'unknown': 'overíme'})
-        self.assertEqual(frozen['values']['availability'], 'do 2-4 dní')
-
     def test_positive_availability_preview_has_a_deadline_checked_before_send(self):
-        item = draft()
-        target = item.document['rows'][0]
-        target['source'].update(sloger_observation=observation().model_dump(mode='json'), supplier_available=True,
-            supplier_observation_expires_at=(ai_content.now() + timedelta(hours=1)).isoformat())
-        target['values']['availability'] = 'do 2-4 dní'
-        self.assertIsNotNone(source.prepare_availability([target], {'unknown': 'overíme'}))
         with self.assertRaises(CatalogError) as expired:
             source.assert_availability_fresh({'supplier_availability_expires_at': (ai_content.now() - timedelta(seconds=1)).isoformat()})
         self.assertEqual(expired.exception.code, 'import_source_availability_expired')
 
 
 class ProductImportSourceWorkerTests(unittest.IsolatedAsyncioTestCase):
-    async def test_shorter_current_ttl_caps_preview_and_publication_without_reviving_old_expiry(self):
-        item = draft()
-        target = item.document['rows'][0]
+    async def test_legacy_staged_journal_honors_shorter_current_ttl_and_original_expiry(self):
         observed = ai_content.now() - timedelta(hours=1)
-        target['source'].update(sloger_observation=observation(observed_at=observed).model_dump(mode='json'),
-            supplier_available=True, supplier_observation_expires_at=(observed + timedelta(hours=6)).isoformat())
-        target['values']['availability'] = 'do 2-4 dní'
         with patch.object(source, '_freshness_seconds', AsyncMock(return_value=300)):
-            self.assertEqual(await source.availability_snapshot(object(), [target], {'unknown': 'overíme'}), {})
-            self.assertEqual(target['values']['availability'], 'overíme')
             with self.assertRaises(CatalogError):
                 await source.assert_current_availability(object(), {
-                    'supplier_availability_expires_at': target['source']['supplier_observation_expires_at'],
+                    'supplier_availability_expires_at': (observed + timedelta(hours=6)).isoformat(),
                     'supplier_availability_observed_at': observed.isoformat()})
         with patch.object(source, '_freshness_seconds', AsyncMock(return_value=86400)):
             with self.assertRaises(CatalogError):

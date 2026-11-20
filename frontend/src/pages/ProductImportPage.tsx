@@ -1,3 +1,4 @@
+import { isImportAvailabilityError } from '../api/catalog';
 import { aiErrorText } from '../utils/aiErrors';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -84,7 +85,11 @@ export function ProductImportPage() {
   const dirty = Object.keys(changes).length;
   useUnsavedNavigationGuard(!!dirty || !!editing || modalDirty, c('discardChanges'));
   useEffect(() => { if (receiptDestination && !dirty && !editing && !modalDirty && !busy) navigate(receiptDestination); }, [receiptDestination, dirty, editing, modalDirty, busy, navigate]);
-  const errorText = (value: string) => value.startsWith('sku_') ? t(`skuPolicy.errors.${value}`, { defaultValue: t('skuPolicy.errors.identity_conflict') }) : value.startsWith('ai_') ? aiErrorText(t, value) : t(`productImport.errors.${value}`, { defaultValue: t(`supplierLinks.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) }) });
+  const errorText = (value: string) => {
+    const [shop, issue] = value.split(':');
+    if (issue && isImportAvailabilityError(issue)) return `${shopName(shop)} · ${t(`catalog.codes.${issue}`)}`;
+    return value.startsWith('sku_') ? t(`skuPolicy.errors.${value}`, { defaultValue: t('skuPolicy.errors.identity_conflict') }) : value.startsWith('ai_') ? aiErrorText(t, value) : t(`productImport.errors.${value}`, { defaultValue: t(`supplierLinks.errors.${value}`, { defaultValue: t(`catalog.codes.${value}`, { defaultValue: t(`ai.errors.${value}`, { defaultValue: value }) }) }) });
+  };
   const rows = draft?.rows || [];
   const profileChanged = (row: ProductImportRow) => (effectiveImportValues(row, changes).ai_category_profile || 'auto') !== (row.values.ai_category_profile || 'auto');
   const needsPreparation = (row: ProductImportRow) => !linkOnly(row) && (profileChanged(row) || row.ai_job?.staging?.profile_matches === false || (row.ai_job?.status === 'completed' && row.ai_job.staging?.ai_applied === false));
@@ -103,6 +108,8 @@ export function ProductImportPage() {
   const publicationDone = draft?.publication_result?.status === 'completed' && draft.publication_result.items.length > 0 && draft.publication_result.items.every(item => ['created', 'exists'].includes(item.status));
   const deliveryState = draft?.publication_state || (publicationDone ? 'completed' : draft?.publication_result?.status);
   const aiPending = rows.some(row => !linkOnly(row) && effectiveImportValues(row, changes).ai_enabled && (!aiApplied(row) || needsPreparation(row)));
+  const previewExpired = !!draft?.publication && Date.now() >= Date.parse(draft.publication.expires_at);
+  const renewPreview = draft?.publication_preview_retryable === true || !!draft?.publication && !draft.publication_result && (previewExpired || isImportAvailabilityError(error));
   const locked = !!busy || sourceLocked || publicationBusy || !!draft?.publication_result;
   const targetsFor = (row: ProductImportRow) => linkOnly(row) ? [] : effectiveImportValues(row, changes).target_shops ?? [draft?.shop || 'biketrek'];
   const shopName = (code: string) => code === 'biketrek' ? 'BIKETREK' : code === 'xtrek' ? 'xTrek' : code;
@@ -175,7 +182,7 @@ export function ProductImportPage() {
     if (busyRef.current || !draftRef.current || (sourcePending(draftRef.current) && !['refreshed', 'sourceRetried', 'sourceSkipped'].includes(name))) return false;
     if (name === 'sourceRetried' && (!draftRef.current.source_lookup?.retryable || sourceActionUncertain)) return false;
     if (name === 'sourceSkipped' && (!draftRef.current.source_lookup?.skippable || sourceActionUncertain)) return false;
-    if (name === 'previewRenewed' && draftRef.current.publication_preview_retryable !== true) return false;
+    if (name === 'previewRenewed' && !renewPreview) return false;
     busyRef.current = true; generation.current++; setBusy(name); setError(''); setNotice('');
     try {
       let value = draftRef.current;
@@ -436,7 +443,7 @@ export function ProductImportPage() {
         {(draft.publication || draft.publication_result) && <section id="import-publication" className="import-panel import-publication"><header><div><h2>{c('publicationTitle', { shop: chosenShopNames || shopName(draft.shop) })}</h2><p>{c(draft.publication_result ? 'publicationResultHelp' : 'publicationHelp')}</p>{chosenShops.some(shop => shop !== draft.shop) && <p>{c('secondaryTargetHelp', { shop: chosenShops.filter(shop => shop !== draft.shop).map(shopName).join(' + ') })}</p>}</div><span className="import-status">{deliveryState ? c(`delivery.${deliveryState}`) : c('hiddenProduct')}</span></header>
           {(draft.publication_result?.errors || draft.publication?.errors || []).map((issue, n) => <p key={n} className="import-error">{errorText(issue)}</p>)}
           <div className="import-publication-items">{(draft.publication_result?.items || draft.publication?.items || []).map(item => <details key={`${item.shop || draft.shop}:${item.code}`}><summary><code>{item.code}</code><span>{shopName(item.shop || draft.shop)}</span><span>{item.name}</span><strong>{t(`catalog.itemStatus.${item.status}`, { defaultValue: item.status })}</strong></summary>{[...item.errors, ...item.warnings].map((issue, n) => <p key={n}>{errorText(issue)}</p>)}<pre>{JSON.stringify(item.payload, null, 2)}</pre></details>)}</div>
-          <div className="import-actions">{!draft.publication_result && <Button disabled={locked || aiPending || !!dirty || !previewPublishable || !!draft.publication?.errors.length || Date.now() >= Date.parse(draft.publication?.expires_at || '')} onClick={() => run('published', value => publishProductImport(value), false)}>{onlyExisting ? c('finishExisting') : c('publish', { count: readyItems.length, shop: chosenShopNames || shopName(draft.shop) })}</Button>}{draft.publication_preview_retryable === true && <Button data-testid="import-fresh-preview" variant="secondary" disabled={!!busy || sourceLocked || publicationBusy || !!dirty} onClick={() => run('previewRenewed', previewProductImport, false)}>{c('freshPreview')}</Button>}{draft.publication_result && draft.publication_preview_retryable !== true && !publicationBusy && (draft.publication_result.status === 'failed' || draft.publication_result.items.some(item => ['failed', 'uncertain'].includes(item.status))) && <Button variant="secondary" disabled={sourceLocked || !!busy || !!dirty} onClick={() => run('published', value => publishProductImport(value, true), false)}>{c('recover')}</Button>}</div>
+          <div className="import-actions">{!draft.publication_result && <Button disabled={locked || aiPending || !!dirty || !previewPublishable || !!draft.publication?.errors.length || renewPreview} onClick={() => run('published', value => publishProductImport(value), false)}>{onlyExisting ? c('finishExisting') : c('publish', { count: readyItems.length, shop: chosenShopNames || shopName(draft.shop) })}</Button>}{renewPreview && <Button data-testid="import-fresh-preview" variant="secondary" disabled={!!busy || sourceLocked || publicationBusy || !!dirty} onClick={() => run('previewRenewed', previewProductImport, false)}>{c('freshPreview')}</Button>}{draft.publication_result && draft.publication_preview_retryable !== true && !publicationBusy && (draft.publication_result.status === 'failed' || draft.publication_result.items.some(item => ['failed', 'uncertain'].includes(item.status))) && <Button variant="secondary" disabled={sourceLocked || !!busy || !!dirty} onClick={() => run('published', value => publishProductImport(value, true), false)}>{c('recover')}</Button>}</div>
         </section>}
         {editor && <ImportCellEditor key={`${editor.row.id}:${editor.column.key}`} column={editor.column} row={{ ...editor.row, values: effectiveImportValues(editor.row, changes) }} value={effectiveImportValues(editor.row, changes)[editor.column.key]} draft={draft} onDirtyChange={setModalDirty} onApply={value => { stage(editor.row, editor.column.key, value); setEditor(null); }} onClose={() => setEditor(null)} />}
         {skuRow && <ImportSkuIdentityDialog row={skuRow} draft={draft} saving={busy === 'skuSaved'} savesOtherEdits={!!dirty}

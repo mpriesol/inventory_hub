@@ -111,7 +111,7 @@ async def importing(id):
                     await product_import.assert_ai_applied(db, draft)
                 # Queue under the draft lock: its durable importer journal then
                 # blocks edits before any remote execution starts.
-                tasks = product_import.queue_publications(draft)
+                tasks = await product_import.queue_publications(db, draft)
             except CatalogError as error:
                 job.error = error.code
                 service.event(job, 'import_failed', error.code)

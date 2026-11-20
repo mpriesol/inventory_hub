@@ -227,13 +227,17 @@ class ShopImportPreview(BaseModel):
     sale_price_overrides: dict[int, Decimal] = Field(default_factory=dict)
 
 
+class ImportResultItem(ImportItem):
+    product_write_attempted: bool | None = None
+
+
 class ShopImportResult(BaseModel):
     preview_id: str
     shop: str
     options: ShopImportOptions
     prices_with_vat: bool
     status: Literal["queued", "running", "completed", "failed"]
-    items: list[ImportItem]
+    items: list[ImportResultItem]
     errors: list[str] = Field(default_factory=list)
     updated_at: datetime
     shop_check: ShopCheck | None = None

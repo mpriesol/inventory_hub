@@ -1,5 +1,6 @@
 """Atomic supplier observations in a disposable PostgreSQL namespace only."""
 from current_schema_fixture import apply_current_core_schema
+from catalog_fixtures import product as catalog_product
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from decimal import Decimal
@@ -23,9 +24,10 @@ from inventory_hub.db_models import FeedRunStatus, IdentifierType, Product, Prod
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services import supplier_availability as service
 from inventory_hub.services import supplier_links, catalog
+from inventory_hub.services.catalog_merchandising import apply_availability, availability_policy, resolve_catalog_availability
 from inventory_hub.services import supplier_availability_b2b as b2b
 from inventory_hub.sloger_probe_types import SlogerObservation
-from inventory_hub.services.supplier_availability_source import AvailabilityError, observation
+from inventory_hub.services.supplier_availability_source import AvailabilityError, ParsedAvailability, observation
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
 from inventory_hub.supplier_availability_types import SupplierAvailabilityInput, SupplierAvailabilityRunInput
 
@@ -105,6 +107,87 @@ class SupplierAvailabilityDatabaseTests(unittest.IsolatedAsyncioTestCase):
         async with self.transaction() as db:
             await service.accept_run(db, plan, records or [observation("SUP-1", "6+"), observation("SUP-2", "0")], 120)
         return plan
+
+    async def test_import_reads_stock_feed_per_raw_variant_and_stock_only_invoice_sku(self):
+        plan = await self.accept([observation("SUP-1", "0", "ano"), observation("SUP-2", "0"),
+                                  observation("ONLY-STOCK", "1")])
+        at = plan["observed_at"] + timedelta(seconds=1)
+        policy = {**availability_policy("paul-lange", self.config), "unavailable": "vypredané"}
+        products = [catalog_product().model_copy(update={"code": sku, "shop_code": shop, "supplier_stock": qty})
+            for sku, shop, qty in (("SUP-1", "BRAND-X", 0), ("SUP-2", "BRAND-Y", 11),
+                                   ("ONLY-STOCK", "BRAND-Z", 0), ("OTHER-SKU", "SUP-1", 11))]
+        products[2].feed_key = "invoice"
+        async with self.transaction() as db:
+            evidence = await resolve_catalog_availability(db, "paul-lange", products, policy, at=at)
+            payload = {"active_yn": False, "variants": [{"code": p.shop_code} for p in reversed(products[:2])]}
+            apply_availability(payload, products[:2], policy, evidence)
+            self.assertEqual([v["availability"] for v in payload["variants"]], ["vypredané", "do 7 dní"])
+            self.assertEqual(payload["availability"], "overíme")
+            self.assertTrue(all(v["can_add_to_basket_yn"] and "stock" not in v for v in payload["variants"]))
+            self.assertEqual(evidence["ONLY-STOCK"]["label"], "do 7 dní")
+            self.assertEqual(evidence["OTHER-SKU"]["label"], "overíme")
+            self.assertEqual(evidence["SUP-1"]["expires_at"], plan["observed_at"] + timedelta(hours=6))
+            db.add(Supplier(code="other", name="Other"))
+            await db.flush()
+            other = products[0].model_copy(update={"supplier": "other"})
+            self.assertEqual((await resolve_catalog_availability(db, "other", [other], policy, at=at))["SUP-1"]["label"], "overíme")
+            self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+
+    async def test_import_never_revives_listing_if_selected_stock_feed_is_stale_or_changed(self):
+        plan = await self.accept()
+        at = plan["observed_at"]
+        product = catalog_product(supplier_available=True).model_copy(update={"code": "SUP-1", "fetched_at": at})
+        policy = availability_policy("paul-lange", self.config)
+        async with self.transaction() as db:
+            stored = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku == product.code))
+            stored.attributes = {"catalog": product.model_dump(mode="json")}
+            settings = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+            settings.freshness_seconds = 3600
+            await db.flush()
+            stale = (await resolve_catalog_availability(db, "paul-lange", [product], policy, at=at + timedelta(hours=1)))[product.code]
+            self.assertEqual((stale["status"], stale["label"], stale["expires_at"]), ("stale", "overíme", None))
+            settings.feed_key = "products"
+            await db.flush()
+            changed = (await resolve_catalog_availability(db, "paul-lange", [product], policy, at=at))[product.code]
+            self.assertEqual((changed["status"], changed["label"]), ("feed_mismatch", "overíme"))
+
+    async def test_stock_only_invoice_item_is_marked_missing_after_covered_feed_only(self):
+        await self.accept([observation("ONLY-STOCK", "1"), observation("SUP-1", "1")])
+        product = catalog_product().model_copy(update={"code": "ONLY-STOCK", "feed_key": "invoice"})
+        policy = availability_policy("paul-lange", self.config)
+        async with self.transaction() as db:
+            settings = await db.get(SupplierAvailabilitySettings, self.supplier_id)
+            settings.missing_availability = "vyradené"
+            self.assertIsNone(await db.scalar(select(SupplierProduct.id).where(SupplierProduct.supplier_sku == product.code)))
+        # A short feed and a recognized SKU with malformed stock keep the
+        # original observation and its expiry, just as they do for a listed SKU.
+        partial = [observation("SUP-1", "1")]
+        invalid = ParsedAvailability(partial, [{"row": 2, "sku": product.code, "stock": "?", "external_stock": None,
+            "kind": "rejected", "code": "supplier_availability_invalid_quantity"}], total=2)
+        for records in (partial, invalid):
+            await self.accept(records)
+            async with self.transaction() as db:
+                actual = await resolve_catalog_availability(db, "paul-lange", [product], policy)
+                self.assertEqual(actual[product.code]["label"], "do 7 dní")
+        await self.accept([observation("SUP-1", "1"), observation("SUP-2", "0")])
+        async with self.transaction() as db:
+            actual = await resolve_catalog_availability(db, "paul-lange", [product], policy)
+            self.assertEqual((actual[product.code]["status"], actual[product.code]["label"]), ("missing_feed_item", "vyradené"))
+
+    async def test_listing_only_supplier_uses_recent_persisted_listing_instead_of_frozen_draft(self):
+        at = service.now()
+        product = catalog_product(supplier_stock=0).model_copy(update={"code": "SUP-1"})
+        policy = availability_policy("paul-lange", self.config)
+        async with self.transaction() as db:
+            await db.delete(await db.get(SupplierAvailabilitySettings, self.supplier_id))
+            stored = await db.scalar(select(SupplierProduct).where(SupplierProduct.supplier_sku == product.code))
+            latest = product.model_copy(update={"fetched_at": at, "supplier_stock_external": Decimal(5)})
+            stored.attributes = {"catalog": latest.model_dump(mode="json")}
+            await db.flush()
+            evidence = await resolve_catalog_availability(db, "paul-lange", [product], policy, at=at)
+            self.assertEqual((evidence["SUP-1"]["status"], evidence["SUP-1"]["label"]), ("listing", "do 7 dní"))
+            expired = await resolve_catalog_availability(db, "paul-lange", [product], policy, at=at + timedelta(days=2))
+            self.assertEqual(expired["SUP-1"]["label"], "overíme")
 
     async def test_linked_source_without_first_run_is_not_reported_as_missing_sku(self):
         async with self.transaction() as db:

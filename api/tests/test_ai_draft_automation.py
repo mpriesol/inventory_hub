@@ -171,12 +171,14 @@ class DraftAutomationTests(unittest.IsolatedAsyncioTestCase):
              patch.object(service, 'get_draft', AsyncMock(return_value=draft)), \
              patch.object(service, 'assert_ai_applied', AsyncMock()) as applied, \
              patch.object(service, 'publication_result', side_effect=[None, {'status':'completed','items':[{'status':'created'}]}]), \
+             patch.object(catalog_import, 'assert_queue_availability', AsyncMock()) as stock_check, \
              patch.object(catalog_import, 'queue_import', return_value=({}, True)) as queue, \
              patch.object(catalog_import, 'execute_import', AsyncMock()) as execute, \
              patch.object(catalog_import, 'import_result', return_value={'status':'completed','items':[{'status':'created'}]}):
             await worker.importing(job.id)
             await worker.importing(job.id)
         queue.assert_called_once_with('biketrek', 'preview', False, staging_id='draft')
+        stock_check.assert_awaited_once_with(db, 'biketrek', 'preview', retry_failed=False)
         execute.assert_awaited_once()
         applied.assert_awaited_once()
         self.assertEqual(job.status, 'completed')

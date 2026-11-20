@@ -11,7 +11,7 @@ import httpx
 from fastapi import HTTPException
 
 from catalog_fixtures import FakeUpgates, product
-from inventory_hub.ai_content_types import CategoryProfile, Content, ParameterDefinition, Policy, Rule, RuleBook, Scope
+from inventory_hub.ai_content_types import CategoryProfile, Content, JobAction, ParameterDefinition, Policy, Rule, RuleBook, Scope
 from inventory_hub.catalog_types import ShopImportOptions
 from inventory_hub.routers.ai_content import access
 from inventory_hub.services import ai_content as service, ai_content_provider as provider, ai_content_rules as rules, ai_content_worker as worker, catalog_import as imports
@@ -385,6 +385,32 @@ class ContentTests(unittest.TestCase):
 
 
 class WorkerErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_availability_preview_can_be_renewed_only_before_product_writes(self):
+        error = 'import_source_availability_changed'
+        db = AsyncMock()
+        ctx = {**context(), 'retry_import': True, 'sale_price_overrides': {'1': '10.50'}}
+        job = SimpleNamespace(id='job-1', kind='product', preview_id='a' * 32, revision=1,
+            status='import_failed', context=ctx, error=error, output={'name': 'Approved content'})
+        action = JobAction(action='renew_import_preview', expected_revision=1)
+        item = {'status': 'failed', 'errors': [error], 'product_write_attempted': False}
+        doc = {'content_approval': {'job_id': job.id}, 'result': {'status': 'completed', 'items': [item]}}
+        with patch.object(imports, '_path'), patch.object(imports, '_load_job', return_value=doc), patch.object(service, 'summary'), \
+                patch.object(service, 'prepare_import', new_callable=AsyncMock) as prepare:
+            for proof in (True, None):
+                item['product_write_attempted'] = proof
+                with self.assertRaisesRegex(service.CatalogError, 'reconciled'):
+                    await service.action(db, job, action)
+            item['product_write_attempted'] = False
+            item['errors'] = ['local_identity_conflict']
+            with self.assertRaisesRegex(service.CatalogError, 'reconciled'):
+                await service.action(db, job, action)
+            prepare.assert_not_awaited()
+            item['errors'] = [error]
+            await service.action(db, job, action)
+            prepare.assert_awaited_once_with(db, job, require_confirmation=True)
+            self.assertEqual(job.context, {key: value for key, value in ctx.items() if key != 'retry_import'})
+            self.assertEqual(job.output, {'name': 'Approved content'})
+
     async def test_safe_diagnostic_reaches_history_without_changing_retry_or_budget_rules(self):
         @asynccontextmanager
         async def session():

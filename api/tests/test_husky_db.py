@@ -19,6 +19,7 @@ from inventory_hub.supplier_availability_delivery_once_migrate import apply_once
 from inventory_hub.adapters import husky_b2b
 from inventory_hub.db_models import Product, Supplier, SupplierProduct, SupplierFeedRun, FeedRunStatus
 from inventory_hub.services import catalog, husky_sync, supplier_availability as service
+from inventory_hub.services.catalog_merchandising import resolve_catalog_availability
 from inventory_hub.services.supplier_availability_publication import _effective_available
 from inventory_hub.services.supplier_availability_source import AvailabilityError
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
@@ -239,6 +240,24 @@ class HuskyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(value['available'])
             self.assertEqual(value['label'],'overíme')
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')),0)
+
+    async def test_import_honors_wholesale_threshold_and_custom_unknown_label(self):
+        await self.accept(await self.plan())
+        policy = {"unknown": "preveríme dostupnosť", "orderable": "do 2-4 dní"}
+        async with self.tx() as db:
+            source = await db.scalar(select(SupplierProduct))
+            product = catalog.public_product(source)
+            evidence = await db.scalar(select(SupplierAvailabilityObservation))
+            evidence.available, evidence.quantity, evidence.quantity_kind = True, Decimal(2), 'exact'
+            await db.flush()
+            public = await resolve_catalog_availability(db, "husky", [product], policy)
+            self.assertEqual(public[product.code]["label"], policy["unknown"])
+            evidence.raw = {"source": "husky_b2b"}
+            for quantity, expected in ((1, policy["unknown"]), (2, policy["orderable"])):
+                evidence.quantity = Decimal(quantity)
+                await db.flush()
+                actual = await resolve_catalog_availability(db, "husky", [product], policy)
+                self.assertEqual(actual[product.code]["label"], expected)
 
     async def test_missing_b2b_quote_preserves_previous_known_data_and_notifies_after_commit(self):
         self.feed.write_text('<SHOP>'+item()+item('PUBLIC-2','MPN-2','4006381333931')+'</SHOP>')

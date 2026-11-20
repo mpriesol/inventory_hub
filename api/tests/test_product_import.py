@@ -166,13 +166,14 @@ class ProductImportUnitTests(unittest.TestCase):
             'biketrek': {'preview_id': 'first'}, 'xtrek': {'preview_id': 'second'}}})
         expired = {'status': 'failed', 'errors': ['import_source_availability_expired'],
             'items': [{'status': 'ready', 'errors': [], 'product_write_attempted': False}]}
-        with patch.object(service, 'target_result', return_value=expired):
-            self.assertTrue(service.source_preview_retryable(draft))
+        for error in ('import_source_availability_expired', 'import_source_availability_changed', 'supplier_availability_changed'):
+            with self.subTest(error=error), patch.object(service, 'target_result', return_value={**expired, 'errors': [error]}):
+                self.assertEqual(service.replaceable_availability_error(draft), error)
         for state, attempted in [('created', True), ('uncertain', True), ('failed', True), ('ready', None)]:
             blocked = deepcopy(expired)
             blocked['items'][0].update(status=state, product_write_attempted=attempted)
             with patch.object(service, 'target_result', side_effect=lambda shop, _: expired if shop == 'biketrek' else blocked):
-                self.assertFalse(service.source_preview_retryable(draft))
+                self.assertIsNone(service.replaceable_availability_error(draft))
 
     def test_multiple_shop_outcomes_keep_unstarted_and_uncertain_targets_visible(self):
         previews = {shop: {'preview_id': shop, 'items': [{'product_ids': [1], 'status': 'ready'}]}
@@ -198,13 +199,29 @@ class ProductImportUnitTests(unittest.TestCase):
         draft = SimpleNamespace(id='draft', document={'publications': previews})
         previews['xtrek']['items'][0]['status'] = 'invalid'
         with patch.object(catalog_import, 'queue_import') as queue, self.assertRaises(CatalogError):
-            service.queue_publications(draft)
+            asyncio.run(service.queue_publications(None, draft))
         queue.assert_not_called()
         previews['xtrek']['items'][0]['status'] = 'ready'
-        with patch.object(catalog_import, 'queue_import', side_effect=[({}, False), ({}, True)]) as queue:
-            self.assertEqual(service.queue_publications(draft, True), [('xtrek', 'xtrek')])
+        with patch.object(catalog_import, 'assert_queue_availability', AsyncMock()), \
+             patch.object(catalog_import, 'queue_import', side_effect=[({}, False), ({}, True)]) as queue:
+            self.assertEqual(asyncio.run(service.queue_publications(None, draft, True)), [('xtrek', 'xtrek')])
         self.assertEqual([call.args[:2] for call in queue.call_args_list], [('biketrek', 'biketrek'), ('xtrek', 'xtrek')])
         self.assertTrue(all(call.kwargs['staging_id'] == 'draft' for call in queue.call_args_list))
+
+    def test_stale_sibling_preserves_explicit_uncertain_readback_and_queued_work(self):
+        previews = {shop: {'preview_id': shop, 'items': [{'product_ids': [1], 'status': 'ready'}]}
+                    for shop in ('biketrek', 'xtrek')}
+        draft = SimpleNamespace(id='draft', document={'publications': previews})
+        expired = CatalogError('import_source_availability_expired', 'Expired', 409)
+        attempts = {'biketrek': {'status': 'failed', 'items': [{'status': 'uncertain'}]}}
+        with patch.object(catalog_import, 'assert_queue_availability', AsyncMock(side_effect=[None, expired])), \
+             patch.object(service, 'target_result', side_effect=lambda shop, _: attempts.get(shop)), \
+             patch.object(catalog_import, 'queue_import', return_value=({}, True)) as queue:
+            self.assertEqual(asyncio.run(service.queue_publications(None, draft, True)), [('biketrek', 'biketrek')])
+            queue.assert_called_once_with('biketrek', 'biketrek', True, staging_id='draft')
+        with patch.object(catalog_import, 'assert_queue_availability', AsyncMock()), \
+             patch.object(catalog_import, 'queue_import', side_effect=[({}, True), expired]):
+            self.assertEqual(asyncio.run(service.queue_publications(None, draft)), [('biketrek', 'biketrek')])
 
     def test_target_selection_distinguishes_hub_only_from_legacy_single_shop(self):
         self.assertEqual(service.row_targets(row(), 'biketrek'), ['biketrek'])
@@ -263,6 +280,33 @@ class ProductImportUnitTests(unittest.TestCase):
         self.assertEqual(item['values']['category_code'], 'LEAF')
         self.assertEqual(item['values']['description_html'], out.long_description)
         self.assertEqual(item['provenance']['description_html'], 'ai')
+
+    def test_preview_keeps_each_variant_stock_label_and_only_overlays_its_manual_cell(self):
+        rows = [row(1, availability='starý údaj'), row(2, availability='Podľa dohody')]
+        for index, item in enumerate(rows):
+            item['source'].update(group_code='X', variant_relationship='explicit')
+            item['is_variant'] = True
+            item['group_key'] = 'PL-G-X'
+            item['values']['variant_attributes'] = [{'name': 'Farba', 'value': ('red', 'blue')[index]}]
+        rows[1]['manual_fields'] = ['availability']
+        built = catalog_import.build_item([service.to_source(r) for r in rows], ShopImportOptions(), {}, True)
+        for variant in built.payload['variants']:
+            variant['availability'] = 'do 7 dní'
+        service.overlay_payload(built, rows, 'sk', document()['categories'])
+        expected = {'PL-A-001': 'do 7 dní', 'PL-A-002': 'Podľa dohody'}
+        self.assertEqual({v['code']: v['availability'] for v in built.payload['variants']}, expected)
+        service.show_preview_availability(rows, {'biketrek': {'items': [built.model_dump()]}}, 'biketrek')
+        self.assertEqual({r['values']['code']: r['values']['availability'] for r in rows}, expected)
+
+    def test_editing_supplier_code_cannot_carry_over_availability_of_the_original_offer(self):
+        item = row(supplier_code='OTHER')
+        item['source'].update(supplier_stock=10, supplier_available=True, supplier_external_available=True)
+        effective = service.to_source(item)
+        self.assertEqual(effective.code, 'OTHER')
+        self.assertIsNone(effective.supplier_stock)
+        self.assertIsNone(effective.supplier_available)
+        self.assertIsNone(effective.supplier_external_available)
+        self.assertEqual(item['source']['supplier_stock'], 10)
 
     def test_group_parent_parameters_exclude_variant_axes_and_nonshared_values(self):
         rows = [row(), row(2)]
@@ -389,7 +433,8 @@ class ProductImportAsyncTests(unittest.IsolatedAsyncioTestCase):
         calls = []
         async def build(db, shop, request, *, frozen_products, staging):
             calls.append((shop, request, staging))
-            result = {'preview_id': shop * 4, 'items': [{'product_ids': request.product_ids, 'status': 'ready'}], 'errors': []}
+            result = {'preview_id': shop * 4, 'expires_at': '2026-01-01T12:00:00Z',
+                      'items': [{'product_ids': request.product_ids, 'status': 'ready'}], 'errors': []}
             return SimpleNamespace(model_dump=lambda **_: result)
         db = SimpleNamespace(flush=AsyncMock())
         with patch.object(service, 'publication_result', return_value=None), \
@@ -439,7 +484,8 @@ class ProductImportAsyncTests(unittest.IsolatedAsyncioTestCase):
         draft = SimpleNamespace(id='draft', shop='biketrek', supplier='paul-lange', revision=1, status='saved', document=doc)
         expired = {'status': 'failed', 'errors': ['import_source_availability_expired'],
             'items': [{'status': 'ready', 'errors': [], 'product_write_attempted': False}]}
-        new = {'preview_id': 'new', 'items': [{'product_ids': [1], 'status': 'ready'}], 'errors': []}
+        new = {'preview_id': 'new', 'expires_at': '2026-01-01T12:00:00Z',
+               'items': [{'product_ids': [1], 'status': 'ready'}], 'errors': []}
         with patch.object(service, 'target_result', side_effect=lambda shop, preview: expired if preview['preview_id'] == 'old' else None), \
              patch.object(service, 'assert_ai_applied', AsyncMock()), \
              patch.object(service, 'public', AsyncMock(side_effect=lambda db, value: value.document)), \

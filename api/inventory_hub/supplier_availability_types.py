@@ -3,13 +3,16 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+DEFAULT_FRESHNESS_SECONDS = 172800
+
+
 class SupplierAvailabilityInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     expected_revision: int = Field(ge=0)
     enabled: bool = False
     feed_key: str = Field(default="products", pattern=r"^[a-zA-Z0-9_-]{1,50}$")
     interval_seconds: int = Field(default=86400, ge=300, le=604800)
-    freshness_seconds: int = Field(default=172800, ge=300, le=2592000)
+    freshness_seconds: int = Field(default=DEFAULT_FRESHNESS_SECONDS, ge=300, le=2592000)
     min_coverage_percent: int = Field(default=100, ge=1, le=100)
     missing_visibility: Literal["keep", "archive"] | None = None
     missing_availability: str | None = Field(default=None, min_length=1, max_length=100, pattern=r"^[^\x00-\x1f\x7f]+$")

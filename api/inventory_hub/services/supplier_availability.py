@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 
-from sqlalchemy import func, select, text, case
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import String, cast, func, select, text, case, true
+from sqlalchemy.dialects.postgresql import ARRAY, insert
 
 from inventory_hub import config_io
 from inventory_hub.config_normalize import normalize_supplier_availability
@@ -15,6 +15,7 @@ from inventory_hub.db_models import FeedRunStatus, Supplier, SupplierFeed, Suppl
 from inventory_hub.db_models_ext import ProductSupplySource
 from inventory_hub.services import catalog
 from inventory_hub.services.supplier_availability_source import AvailabilityError, ParsedAvailability, configuration
+from inventory_hub.supplier_availability_types import DEFAULT_FRESHNESS_SECONDS
 from inventory_hub.supplier_availability_models import SupplierAvailabilityObservation, SupplierAvailabilitySettings
 
 
@@ -67,7 +68,7 @@ def public(supplier, cfg, settings=None):
         "manual_only": manual_only, "source_kind": "b2b" if manual_only else "feed",
         "refresh_scope": "hub_products" if manual_only else "supplier_catalog", "refresh_progress": None, "latest_run": None,
         "interval_seconds": settings.interval_seconds if settings else 86400,
-        "freshness_seconds": settings.freshness_seconds if settings else 172800,
+        "freshness_seconds": settings.freshness_seconds if settings else DEFAULT_FRESHNESS_SECONDS,
         "min_coverage_percent": settings.min_coverage_percent if settings else 100,
         "missing_visibility": getattr(settings, "missing_visibility", "keep"),
         "missing_availability": getattr(settings, "missing_availability", "overíme"),
@@ -281,13 +282,25 @@ async def record_absences(db, plan, records, observed, expires):
             (supplier_id, supplier_sku, feed_id, run_id, available, quantity, quantity_kind, raw, observed_at, expires_at)
         SELECT p.supplier_id, p.supplier_sku, :feed_id, :run_id, NULL, NULL, 'unknown',
                jsonb_build_object('source', CAST(:source AS text)), :observed, :expires
-        FROM supplier_products p
-        WHERE p.supplier_id = :supplier_id AND NOT p.is_discontinued
-          AND (p.is_active OR EXISTS (
-              SELECT 1 FROM product_supply_sources l
-              WHERE l.supplier_product_id = p.id AND l.is_active AND l.orderable
-          ))
-          AND NOT (p.supplier_sku = ANY(CAST(:seen AS varchar[])))
+        FROM (
+            SELECT p.supplier_id, p.supplier_sku
+            FROM supplier_products p
+            WHERE p.supplier_id = :supplier_id AND NOT p.is_discontinued
+              AND (p.is_active OR EXISTS (
+                  SELECT 1 FROM product_supply_sources l
+                  WHERE l.supplier_product_id = p.id AND l.is_active AND l.orderable
+              ))
+            UNION ALL
+            SELECT o.supplier_id, o.supplier_sku
+            FROM supplier_availability_observations o
+            WHERE o.supplier_id = :supplier_id AND o.feed_id = :feed_id
+              AND o.raw->>'source' IS DISTINCT FROM :source
+              AND NOT EXISTS (
+                  SELECT 1 FROM supplier_products p
+                  WHERE p.supplier_id = o.supplier_id AND p.supplier_sku = o.supplier_sku
+              )
+        ) p
+        WHERE NOT (p.supplier_sku = ANY(CAST(:seen AS varchar[])))
         ON CONFLICT (supplier_id, supplier_sku) DO UPDATE SET
             feed_id = EXCLUDED.feed_id, run_id = EXCLUDED.run_id,
             available = NULL, quantity = NULL, quantity_kind = 'unknown', raw = EXCLUDED.raw,
@@ -393,7 +406,7 @@ async def fail_run(db, supplier_id, run_id, code):
     await db.flush()
 
 
-def project_observation(observation, label, supplier, at, freshness_seconds=None):
+def project_observation(observation, label, supplier, at, freshness_seconds=None, *, unknown_label="overíme"):
     expires = observation.expires_at if observation else None
     if observation and freshness_seconds is not None:
         # Shortening TTL takes effect immediately; extending it never revives expired facts.
@@ -403,8 +416,8 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
         (observation.raw or {}).get("source") == "husky_public_stock")
     available = observation.available if fresh and wholesale_evidence else None
     if supplier == "husky" and (not observation or observation.quantity is None or observation.quantity < 2):
-        label = "overíme"
-    return {"available": available, "fresh": fresh, "label": label if available is True else "overíme",
+        label = unknown_label
+    return {"available": available, "fresh": fresh, "label": label if available is True else unknown_label,
         "availability_state": "available" if available is True else "unavailable" if available is False else "unknown",
         "source": supplier, "quantity": str(observation.quantity) if fresh and wholesale_evidence and observation.quantity is not None else None,
         "quantity_kind": observation.quantity_kind if fresh and wholesale_evidence else "unknown",
@@ -415,11 +428,11 @@ def project_observation(observation, label, supplier, at, freshness_seconds=None
             else "supplier_observation_expired" if observation else "supplier_observation_missing"}
 
 
-def _source_projection(product, supplier, observation, settings, observed_feed_key, label, config_error, at):
+def _source_projection(product, supplier, observation, settings, observed_feed_key, label, config_error, at, *, sku=None, unknown_label="overíme"):
     """Separate identity, source setup and exact-SKU evidence without guessing stock."""
     result = project_observation(None, "overíme", supplier.code, at)
     refresh = "running" if settings and settings.running_run_id else "queued" if settings and settings.manual_requested_at else "idle"
-    result.update(supplier=supplier.code, supplier_name=supplier.name, supplier_sku=product.supplier_sku,
+    result.update(supplier=supplier.code, supplier_name=supplier.name, supplier_sku=product.supplier_sku if product else sku,
         feed_key=settings.feed_key if settings else None, observation_feed_key=observed_feed_key,
         last_success_at=settings.last_success_at.isoformat() if settings and settings.last_success_at else None,
         last_error=_safe_error(settings.last_error) if settings else None, refresh_state=refresh,
@@ -431,7 +444,7 @@ def _source_projection(product, supplier, observation, settings, observed_feed_k
             result["source"] = None
         return result
     missing = observation and (observation.raw or {}).get("source") == ABSENCE_SOURCE
-    if (not product.is_active and not missing) or product.is_discontinued or not supplier.is_active:
+    if not supplier.is_active or (product and ((not product.is_active and not missing) or product.is_discontinued)):
         return unavailable("unavailable_source", "supplier_source_disabled", "check_source")
     if config_error:
         return unavailable("configuration_error", config_error, "configure")
@@ -448,7 +461,7 @@ def _source_projection(product, supplier, observation, settings, observed_feed_k
         result.update(label=settings.missing_availability, expires_at=None, missing_visibility=visibility,
             orderable=visibility != "archive")
         return unavailable("missing_feed_item", "supplier_item_missing_from_feed", "refresh")
-    result.update(project_observation(observation, label, supplier.code, at, settings.freshness_seconds))
+    result.update(project_observation(observation, label, supplier.code, at, settings.freshness_seconds, unknown_label=unknown_label))
     result["action"] = "wait" if refresh != "idle" else "refresh"
     return result
 
@@ -464,20 +477,38 @@ def _source_label(supplier_code, settings):
         return None, "supplier_availability_source_missing"
 
 
+async def exact_source_evidence(db, supplier_code, skus, at, *, unknown_label="overíme"):
+    """Read a batch by native SKU, including stock-feed items not yet in the listing."""
+    if not skus:
+        return {}
+    requested = select(func.unnest(cast(list(skus), ARRAY(String))).label("sku")).cte("requested")
+    rows = await db.execute(select(requested.c.sku, SupplierProduct, Supplier, SupplierAvailabilityObservation,
+        SupplierAvailabilitySettings, SupplierFeed.code).select_from(Supplier)
+        .join(requested, true())
+        .outerjoin(SupplierProduct, (SupplierProduct.supplier_id == Supplier.id) &
+            (SupplierProduct.supplier_sku == requested.c.sku))
+        .outerjoin(SupplierAvailabilityObservation, (SupplierAvailabilityObservation.supplier_id == Supplier.id) &
+            (SupplierAvailabilityObservation.supplier_sku == requested.c.sku))
+        .outerjoin(SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == Supplier.id)
+        .outerjoin(SupplierFeed, SupplierFeed.id == SupplierAvailabilityObservation.feed_id)
+        .where(Supplier.code == supplier_code))
+    result, source_label = {}, None
+    for sku, product, supplier, observation, settings, feed_key in rows:
+        if source_label is None:
+            source_label = _source_label(supplier_code, settings)
+        label, config_error = source_label
+        projection = _source_projection(product, supplier, observation, settings, feed_key, label, config_error, at,
+                                        sku=sku, unknown_label=unknown_label)
+        result[sku] = product, projection
+    return result
+
+
 async def source_observation(db, supplier_code, sku, at=None):
     """Read one exact catalog SKU and its independent availability evidence."""
-    row = (await db.execute(select(SupplierProduct, Supplier, SupplierAvailabilityObservation, SupplierAvailabilitySettings)
-        .join(Supplier, Supplier.id == SupplierProduct.supplier_id)
-        .outerjoin(SupplierAvailabilityObservation, (SupplierAvailabilityObservation.supplier_id == Supplier.id) &
-            (SupplierAvailabilityObservation.supplier_sku == SupplierProduct.supplier_sku))
-        .outerjoin(SupplierAvailabilitySettings, SupplierAvailabilitySettings.supplier_id == Supplier.id)
-        .where(Supplier.code == supplier_code, SupplierProduct.supplier_sku == sku))).one_or_none()
-    if row is None:
+    row = (await exact_source_evidence(db, supplier_code, [sku], at or now())).get(sku)
+    if row is None or row[0] is None:
         raise AvailabilityError("supplier_availability_source_missing", 404)
-    product, supplier, observation, settings = row
-    feed_key = await db.scalar(select(SupplierFeed.code).where(SupplierFeed.id == observation.feed_id)) if observation else None
-    label, error = _source_label(supplier.code, settings)
-    return _source_projection(product, supplier, observation, settings, feed_key, label, error, at or now())
+    return row[1]
 
 
 async def project(db, product_ids, at=None):
