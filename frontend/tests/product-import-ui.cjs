@@ -668,13 +668,28 @@ async function render(entry) {
   assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'WORK-001','Services keep their explicit identity without a manufacturer field');
   assert(document.querySelector('[data-testid="sku-leaf-confirmed"]').checked,'The manufacturer correction rule leaves service confirmation unchanged');
   await key(document.querySelector('[role="dialog"]'),'Escape');
-  server={...server,status:'draft',rows:[{...clone(initial[0]),values:{...values(1),brand:'Topeak',manufacturer_code:'',supplier_code:'SUP-900',sku_identity:{brand:'Topeak',source_code:'SUP-900',code_kind:'supplier',supplier_id:8,source_ref:'supplier:fixture:leaf:SUP-900',leaf_confirmed:false}}}]};
+  server={...server,status:'draft',rows:[{...clone(initial[0]),hub_errors:['sku_identity_required'],values:{...values(1),brand:'Topeak',manufacturer_code:'',supplier_code:'SUP-900',sku_identity:{brand:'Topeak',source_code:'SUP-900',code_kind:'supplier',supplier_id:8,source_ref:'supplier:fixture:leaf:SUP-900',leaf_confirmed:false}}}]};
   await render('/product-import?draft=test-draft&case=missing-manufacturer-code');
   await click(document.querySelector('[data-testid="import-sku-1"]'));
   assert.equal(document.querySelector('[data-testid="sku-source-code"]').value,'','A missing manufacturer code never falls back to or relabels a historical supplier code');
   await act(async()=>new Promise(resolve=>setTimeout(resolve,300)));
   const lookup=calls.filter(call=>call.path==='/api/sku-policy/preview').at(-1).body;
   assert.equal(lookup.sku_identity,null); assert.equal(lookup.supplier_sku,'SUP-900','The scoped supplier code still supports existing-card lookup');
+  await key(document.querySelector('[role="dialog"]'), 'Escape');
+  assert(document.body.textContent.includes(i18n.t('skuPolicy.draftNeedsCode')));
+  const refreshedRow = server.rows[0];
+  refreshedRow.values.manufacturer_code = 'FIXTURE-42';
+  refreshedRow.values.sku_identity = { brand: 'Topeak', source_code: 'FIXTURE-42', code_kind: 'manufacturer',
+    source_ref: 'feed-mapping:fixture:products:1:mpn', leaf_confirmed: true };
+  refreshedRow.values.code = 'TP-FIXTURE-42';
+  refreshedRow.sku_preview = { status: 'new', sku: refreshedRow.values.code, product_id: null, brand_id: 1, reasons: [], candidate_product_ids: [] };
+  refreshedRow.hub_errors = [];
+  const beforeRefresh = calls.length;
+  await click(button('Obnoviť'));
+  assert.equal(document.querySelector('tr[data-row="1"] .import-code code').textContent, 'TP-FIXTURE-42');
+  assert.equal(document.querySelector('[data-testid="import-sku-1"]').textContent, i18n.t('skuPolicy.reviewSku'));
+  assert(!document.body.textContent.includes(i18n.t('skuPolicy.draftNeedsCode')));
+  assert.deepEqual(calls.slice(beforeRefresh).map(call => [call.method, call.path]), [['GET', '/api/product-imports/test-draft']]);
 
   server = { ...server, status: 'draft', supplier: 'sk-profi-bike', identity_review_required: true, identity_review_count: 1, rows: [{
     ...clone(initial[2]), values: { ...values(3), item_type: 'stock', code: 'SKP-FIXTURE', supplier_code: 'SUP-123',

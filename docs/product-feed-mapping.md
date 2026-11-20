@@ -104,7 +104,8 @@ confirmation and exact value. Regular refreshes of that same binding preserve th
 confirmation; a missing field invalidates its evidence rather than certifying a
 retained display value. Editing the binding's source, target or transforms in the
 UI clears confirmation. Unconfirmed native field names never imply manufacturer
-proof. The import preparation checks the source/provenance/value agreement before
-using this evidence; otherwise an operator must confirm the concrete code or link
-an independently identified existing card. Supplier aliases remain scoped to their
-supplier and never become manufacturer codes by fallback.
+proof. Import preparation checks the source, provenance and current row together.
+For an open draft, a later shared confirmation can identify a manufacturer code
+already present in the frozen feed record. The saved revisions must agree on the
+source format, record path and CSV settings, and the field must yield one exact
+text value for the same leaf. The supplier's own code remains supplier-scoped.

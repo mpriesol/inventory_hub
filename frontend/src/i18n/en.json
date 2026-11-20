@@ -4123,6 +4123,8 @@
       "invoice": "Invoice",
       "feed": "Feed",
       "mapping": "Mapping",
+      "feed_mapping": "Verified feed field",
+      "feed_reference": "Verified package code",
       "manual": "Manual",
       "ai": "AI",
       "derived": "Derived",

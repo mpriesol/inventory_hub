@@ -28,6 +28,23 @@ class FeedMappingDatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await catalog_db.CatalogDatabaseTests.asyncTearDown(self)
 
+    async def test_frozen_record_can_reuse_confirmation_only_at_compatible_source_scope(self):
+        async with self.sessions() as db:
+            binding = {"target": "manufacturer_code", "source": "part", "manufacturer_code_confirmed": True}
+            shared = MappingDefinition.model_validate({"bindings": [binding]})
+            await mapping.save_mapping(db, "paul-lange", MappingSave(expected_revision=0, definition=shared))
+            first = await mapping.confirmed_mapping_for_snapshot(db, "paul-lange", "products", 0)
+            self.assertEqual(first.revision, 1)
+            edited = shared.model_copy(update={"seo_fallback": False})
+            await mapping.save_mapping(db, "paul-lange", MappingSave(expected_revision=1, definition=edited))
+            compatible = await mapping.confirmed_mapping_for_snapshot(db, "paul-lange", "products", 1)
+            self.assertEqual(compatible.revision, 2)
+            leaf_scope = edited.model_copy(update={"record_path": "products/product/variant"})
+            await mapping.save_mapping(db, "paul-lange", MappingSave(expected_revision=2, definition=leaf_scope))
+            for revision in (0, 1, 2, 4):
+                self.assertIsNone(await mapping.confirmed_mapping_for_snapshot(db, "paul-lange", "products", revision))
+            self.assertEqual((await mapping.confirmed_mapping_for_snapshot(db, "paul-lange", "products", 3)).revision, 3)
+
     async def test_save_revision_conflicts_do_not_rewrite_catalog_and_reapply_is_explicit(self):
         async with self.sessions() as db:
             first = await catalog.refresh_catalog(db, "paul-lange")

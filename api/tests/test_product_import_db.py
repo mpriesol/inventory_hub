@@ -181,6 +181,115 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
         self.assertEqual(self.client.sent, [])
 
+    async def test_reopen_uses_later_confirmed_field_and_brand_from_original_draft(self):
+        from inventory_hub.feed_mapping_types import MappingDefinition, MappingSave
+        from inventory_hub.services import feed_mapping, sku_policy
+        from inventory_hub.sku_policy_types import BrandCreate
+        from inventory_hub.sku_policy_models import ProductSkuIdentity
+
+        # The supplier has an exact variant identifier in one raw field, but
+        # at selection time the operator has not confirmed what it means.
+        self.write_feed(xml_item(extra='<MFG_ARTICLE>00042-M</MFG_ARTICLE>').replace(
+            '<MANUFACTURER_CODE>M-A-001</MANUFACTURER_CODE>', ''))
+        await self.refresh()
+        draft = await self.create(approve_identity=False)
+        self.assertIn('sku_identity_required', draft['rows'][0]['hub_errors'])
+        async with self.sessions() as db:
+            await feed_mapping.save_mapping(db, 'paul-lange', MappingSave(expected_revision=0,
+                definition=MappingDefinition.model_validate({'bindings': [{'target': 'manufacturer_code',
+                    'source': 'MFG_ARTICLE', 'manufacturer_code_confirmed': True}]})))
+            await db.commit()
+        async with self.sessions() as db:
+            frozen = await service.get_draft(db, draft['id'])
+            initial = deepcopy(frozen.document)
+            pending = await service.public(db, frozen, reopen=True)
+            self.assertIn('sku_brand_unregistered', pending['rows'][0]['hub_errors'])
+            self.assertEqual(frozen.document, initial)
+            await sku_policy.create_brand(db, BrandCreate(name='TEST', code='TT', source_ref='Fixture registration'))
+            await db.commit()
+
+        # Subsequent supplier refresh may have a different value for this
+        # supplier SKU. The existing draft proves its original frozen variant.
+        self.write_feed(xml_item(extra='<MFG_ARTICLE>NEW-VALUE</MFG_ARTICLE>'))
+        await self.refresh()
+        async with self.sessions() as db:
+            frozen = await service.get_draft(db, draft['id'])
+            opened = await service.public(db, frozen, reopen=True)
+            self.assertEqual(opened['rows'][0]['values']['code'], 'TT-00042-M')
+            self.assertEqual(opened['rows'][0]['hub_errors'], [])
+            self.assertEqual(frozen.document, initial)
+            self.assertEqual(opened['revision'], draft['revision'])
+        review = await self.mutate(opened, product_import_identity.review)
+        self.assertEqual(review['rows'][0]['source']['sku'], 'TT-00042-M')
+        saved = await self.mutate(opened, service.save)
+        self.assertEqual(saved['rows'][0]['values']['manufacturer_code'], '00042-M')
+        async with self.sessions() as db:
+            proof = await db.scalar(select(ProductSkuIdentity).where(
+                ProductSkuIdentity.product_id == saved['rows'][0]['hub_product_id']))
+            self.assertEqual((proof.source_code, proof.source_ref), ('00042-M', 'feed-mapping:paul-lange:products:1:MFG_ARTICLE'))
+
+    async def test_verified_article_for_existing_draft_is_rechecked_at_save_and_respects_manual_codes(self):
+        from inventory_hub.services import sku_policy
+        from inventory_hub.sku_policy_types import BrandCreate
+
+        self.write_feed(xml_item(ean='4006381333931').replace('<MANUFACTURER_CODE>M-A-001</MANUFACTURER_CODE>', ''))
+        await self.refresh()
+        async with self.sessions() as db:
+            await sku_policy.create_brand(db, BrandCreate(name='TEST', code='TT', source_ref='Fixture registration'))
+            await db.commit()
+        draft = await self.create(approve_identity=False)
+        self.assertIn('sku_identity_required', draft['rows'][0]['hub_errors'])
+        params = config_io.supplier_path('paul-lange')
+        cfg = json.loads(params.read_text())
+        references = {'products': {'A-001': {'brand': 'TEST', 'gtin': '4006381333931',
+            'manufacturer_code': '0005-G', 'source_ref': 'https://parts.example.com/test/0005-G'}}}
+        cfg.setdefault('adapter_settings', {})['manufacturer_references'] = references
+        params.write_text(json.dumps(cfg))
+
+        async with self.sessions() as db:
+            frozen = await service.get_draft(db, draft['id'])
+            opened = await service.public(db, frozen, reopen=True)
+            self.assertEqual(opened['rows'][0]['values']['code'], 'TT-0005-G')
+            self.assertEqual(opened['rows'][0]['provenance']['sku_identity'], 'feed_reference')
+            self.assertEqual(opened['rows'][0]['hub_errors'], [])
+            self.assertEqual(frozen.document['rows'][0]['values']['manufacturer_code'], '')
+        saved_cells = await self.mutate(opened, service.patch_rows, DraftPatch, rows=[{
+            'id': self.ids[0], 'values': {'name': 'Edited title'}}])
+        self.assertEqual(saved_cells['rows'][0]['values']['sku_identity']['source_ref'],
+            references['products']['A-001']['source_ref'])
+
+        enabled = await self.mutate(saved_cells, service.patch_rows, DraftPatch, rows=[{
+            'id': self.ids[0], 'values': {'ai_enabled': True}}])
+        prepared = await self.mutate(enabled, service.prepare_ai, DraftAiRequest)
+        self.assertEqual(prepared['rows'][0]['values']['code'], 'TT-0005-G')
+
+        # Direct save must reject a withdrawn assertion, even without a reload.
+        del cfg['adapter_settings']['manufacturer_references']
+        params.write_text(json.dumps(cfg))
+        with self.assertRaises(catalog.CatalogError) as stale_ai:
+            await self.mutate(prepared, service.start_ai)
+        self.assertEqual(stale_ai.exception.code, 'import_ai_identity_changed')
+        with self.assertRaises(catalog.CatalogError) as refused:
+            await self.mutate(prepared, service.save)
+        self.assertEqual(refused.exception.code, 'import_invalid_rows')
+        async with self.sessions() as db:
+            opened = await service.public(db, await service.get_draft(db, draft['id']), reopen=True)
+            self.assertIn('sku_identity_required', opened['rows'][0]['hub_errors'])
+            self.assertEqual(opened['rows'][0]['values']['code'], 'PL-A-001')
+            self.assertEqual(opened['rows'][0]['values']['manufacturer_code'], '')
+            self.assertEqual(opened['rows'][0]['values']['name'], 'Edited title')
+            self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+
+        cfg['adapter_settings']['manufacturer_references'] = references
+        params.write_text(json.dumps(cfg))
+        manual = {'brand': 'TEST', 'source_code': 'CORRECTED-05', 'code_kind': 'manufacturer',
+            'source_ref': 'Operator checked packaging', 'leaf_confirmed': True}
+        corrected = await self.mutate(opened, service.patch_rows, DraftPatch, rows=[{
+            'id': self.ids[0], 'values': {'sku_identity': manual}}])
+        saved = await self.mutate(corrected, service.save)
+        self.assertEqual(saved['rows'][0]['values']['code'], 'TT-CORRECTED-05')
+        self.assertEqual(saved['rows'][0]['values']['sku_identity']['source_ref'], manual['source_ref'])
+
     async def test_reviewed_leaf_code_preserves_zeros_and_saves_card_before_merchandising(self):
         from inventory_hub.sku_policy_models import ProductSkuIdentity
         draft = await self.create()

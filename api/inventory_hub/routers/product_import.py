@@ -40,7 +40,7 @@ async def create(request: DraftCreate, background: BackgroundTasks, db: DB):
 @router.get('/{id}')
 async def detail(id: DraftId, db: DB):
     async def operation():
-        return await service.public(db, await service.get_draft(db, id))
+        return await service.public(db, await service.get_draft(db, id), reopen=True)
     return await call(operation())
 
 

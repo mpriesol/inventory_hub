@@ -31,6 +31,7 @@ from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 COMMON_FIELDS = {'group_name', 'brand', 'description_html', 'short_description', 'seo_title',
                  'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled', 'ai_category_profile',
                  'target_shops', 'target_category_codes'}
+AUTO_SKU_SOURCES = {'feed_mapping', 'feed_reference'}
 AI_FIELDS = {'name', 'group_name', 'short_description', 'description_html', 'seo_title', 'seo_description', 'parameters', 'metadata', 'category_code'}
 
 
@@ -229,8 +230,10 @@ async def assert_ai_applied(db, draft):
         raise CatalogError('import_ai_not_applied', 'Apply the selected AI results to the table or explicitly turn AI off before publication', 409)
 
 
-async def public(db, draft):
+async def public(db, draft, *, reopen=False):
     document = draft.document
+    if reopen:
+        document = await rechecked_document(db, draft)
     rows = deepcopy(document['rows'])
     for row in rows:
         row['values'].setdefault('ai_category_profile', 'auto')
@@ -289,7 +292,7 @@ async def public(db, draft):
             'publication_preview_retryable': bool(result) and source_preview_retryable(draft),
             'source_lookup': source_lookup_public(draft),
             'receiving_origin': document.get('receiving_origin'),
-            **({'identity_review_required': False, 'identity_review_count': 0} if result else await identity_summary(db, draft))}
+            **({'identity_review_required': False, 'identity_review_count': 0} if result else await identity_summary(db, draft, document=document))}
 
 
 def source_lookup_public(draft):
@@ -407,27 +410,90 @@ def validate_rows(document):
                 if (row.get('sku_preview') or {}).get('status') in ('blocked', 'conflict') else []))
 
 
-def mapped_manufacturer_identity(row, supplier):
-    """Only an explicitly confirmed shared mapping proves a manufacturer code.
+def unchanged_feed_leaf(row, supplier):
+    values, source = row['values'], row['source']
+    original_axes = source.get('variant_attributes', [])
+    axes = values['variant_attributes']
+    # Approved AI may normalize axis labels on the same frozen variant.
+    # Both ends must match the saved AI input/output, so manual edits cannot
+    # inherit an earlier variant's evidence.
+    ai_axes = (row['provenance'].get('variant_attributes') == 'ai'
+               and (row.get('ai_baseline') or {}).get('variant_attributes') == original_axes
+               and (row.get('ai_applied_snapshot') or {}).get('values', {}).get('variant_attributes') == axes)
+    return (source.get('supplier') == supplier and row.get('source_kind') != 'invoice'
+            and bool(values['brand']) and values['brand'] == source.get('brand')
+            and values['supplier_code'] == source.get('code')
+            and set(values['eans']) == set(source.get('eans', []))
+            and (axes == original_axes or ai_axes)
+            and 'manufacturer_code' not in row['manual_fields'])
 
-    Native field names and supplier codes are not manufacturer-code evidence.
-    Keep the original mapping value tied to the frozen source and edited row.
-    """
+
+def mapped_manufacturer_identity(row, supplier):
+    """Only a confirmed mapping of this exact, unchanged source leaf proves a code."""
     values, source = row['values'], row['source']
     proof = (source.get('mapping_provenance') or {}).get('fields', {}).get('manufacturer_code') or {}
     code = values.get('manufacturer_code')
-    if (not values.get('brand') or values['brand'] != source.get('brand')
-            or not code or source.get('manufacturer_code') != code
-            or proof.get('manufacturer_code_confirmed') is not True or proof.get('value') != code
+    if not unchanged_feed_leaf(row, supplier) or not code or source.get('manufacturer_code') != code:
+        return None
+    return identity_from_mapping(proof, code, values['brand'], supplier, source.get('feed_key', 'products'))
+
+
+def identity_from_mapping(proof, code, brand, supplier, feed_key):
+    if (proof.get('manufacturer_code_confirmed') is not True or proof.get('value') != code
             or proof.get('scope') != 'feed' or not proof.get('source')
             or type(proof.get('revision')) is not int or proof['revision'] <= 0):
         return None
-    return {'brand': values['brand'], 'source_code': code, 'code_kind': 'manufacturer',
-            'source_ref': f"feed-mapping:{supplier}:{source.get('feed_key', 'products')}:{proof['revision']}:{proof['source']}",
+    return {'brand': brand, 'source_code': code, 'code_kind': 'manufacturer',
+            'source_ref': f"feed-mapping:{supplier}:{feed_key}:{proof['revision']}:{proof['source']}",
             'leaf_confirmed': True}
 
 
-async def prepare_sku_rows(db, draft, document):
+async def automatic_manufacturer_identity(db, row, supplier, mappings, references):
+    if not unchanged_feed_leaf(row, supplier):
+        return None, None
+    from inventory_hub.services import feed_mapping
+    from inventory_hub.services.manufacturer_references import verified_manufacturer_item
+    source, values = row['source'], row['values']
+    feed_key = source.get('feed_key', 'products')
+    # The frozen mapping assertion is enough by itself. A later confirmation
+    # may prove a field already in this observation, without refreshing it.
+    identity = mapped_manufacturer_identity(row, supplier)
+    if not identity and source.get('raw_fields'):
+        key = (feed_key, source.get('mapping_revision', 0))
+        if key not in mappings:
+            mappings[key] = await feed_mapping.confirmed_mapping_for_snapshot(db, supplier, *key)
+        proof = feed_mapping.confirmed_manufacturer_field(source['raw_fields'], mappings[key])
+        if proof:
+            identity = identity_from_mapping(proof, proof['value'], values['brand'], supplier, feed_key)
+    reference = verified_manufacturer_item(source, references)
+    if identity and reference and identity['source_code'] != reference['source_code']:
+        return None, None
+    candidate = identity or reference
+    source_codes = {source.get('manufacturer_code')}
+    if row['provenance'].get('manufacturer_code') not in AUTO_SKU_SOURCES:
+        source_codes.add(values.get('manufacturer_code'))
+    if not candidate or any(code and code != candidate['source_code'] for code in source_codes):
+        return None, None
+    return candidate, 'feed_mapping' if identity else 'feed_reference'
+
+
+async def rechecked_document(db, draft):
+    """Recheck unresolved and automatically inferred SKUs without editing the draft."""
+    document = draft.document
+    pending = {row['id'] for row in document['rows']
+               if not (row.get('hub_product_id') or row.get('expected_hub_product_id') or link_only(row))
+               and (row.get('provenance', {}).get('sku_identity') in AUTO_SKU_SOURCES
+                    or set((row.get('sku_preview') or {}).get('reasons', ()))
+                       & {'sku_identity_required', 'sku_brand_unregistered', 'sku_brand_archived'})}
+    if not pending or draft.status != 'draft' or publication_previews(draft):
+        return document
+    projected = deepcopy(document)
+    await prepare_sku_rows(db, draft, projected, row_ids=pending)
+    validate_rows(projected)
+    return projected
+
+
+async def prepare_sku_rows(db, draft, document, *, row_ids=None):
     """Preview the same allocation policy for feed and invoice preparations.
 
     This is read-only. The save repeats it inside IDENTITY_WRITE_LOCK and keeps
@@ -437,8 +503,18 @@ async def prepare_sku_rows(db, draft, document):
     from inventory_hub.services.sku_policy import preview_sku
     supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == draft.supplier))
     document['supplier_id'] = supplier_id
-    selected = [r for r in document['rows'] if not link_only(r)]
-    existing, conflicts = await catalog_import.local_identities(db, [to_source(r) for r in selected])
+    selected = [r for r in document['rows'] if not link_only(r) and (row_ids is None or r['id'] in row_ids)]
+    mappings, references = {}, None
+    # A previously previewed manufacturer SKU must never itself prove that
+    # the frozen supplier offer already belongs to a newly appeared card.
+    sources = []
+    for row in selected:
+        source = to_source(row)
+        if (row['provenance'].get('sku_identity') in AUTO_SKU_SOURCES
+                and not (row.get('hub_product_id') or row.get('expected_hub_product_id'))):
+            source = source.model_copy(update={'shop_code': row['source']['shop_code']})
+        sources.append(source)
+    existing, conflicts = await catalog_import.local_identities(db, sources)
     for row in selected:
         values = row['values']
         expected = row.get('hub_product_id') or row.get('expected_hub_product_id')
@@ -452,17 +528,31 @@ async def prepare_sku_rows(db, draft, document):
         identity = values.get('sku_identity')
         # New manufacturer SKUs use the manufacturer's concrete product code.
         # A supplier's own catalogue number remains a separate scoped alias.
-        if not product_id and not expected and (not identity or row.get('provenance', {}).get('sku_identity') == 'feed_mapping'):
-            identity = mapped_manufacturer_identity(row, draft.supplier)
+        provenance = row['provenance']
+        if (not expected and 'sku_identity' not in row['manual_fields']
+                and (provenance.get('sku_identity') in AUTO_SKU_SOURCES or (not identity and not product_id))):
+            if references is None:
+                from inventory_hub.services.manufacturer_references import supplier_references
+                references = supplier_references(draft.supplier)
+            identity, origin = await automatic_manufacturer_identity(db, row, draft.supplier, mappings, references)
             if identity:
                 values['sku_identity'] = identity
-                row.setdefault('provenance', {})['sku_identity'] = 'feed_mapping'
-            elif row.get('provenance', {}).get('sku_identity') == 'feed_mapping':
+                provenance['sku_identity'] = origin
+                if not values.get('manufacturer_code') or provenance.get('manufacturer_code') in AUTO_SKU_SOURCES:
+                    values['manufacturer_code'] = identity['source_code']
+                    provenance['manufacturer_code'] = origin
+            elif provenance.get('sku_identity') in AUTO_SKU_SOURCES:
                 values['sku_identity'] = None
-                row['provenance'].pop('sku_identity', None)
+                provenance.pop('sku_identity', None)
+                if provenance.get('manufacturer_code') in AUTO_SKU_SOURCES:
+                    values['manufacturer_code'] = row['source'].get('manufacturer_code') or ''
+                    provenance['manufacturer_code'] = 'feed'
+                values['code'] = row['canonical_code'] = row['source']['shop_code']
+                if not row['is_variant']:
+                    row['group_key'] = values['code']
         item = SkuIdentityInput.model_validate(identity) if identity else None
         if (item and item.code_kind == 'manufacturer' and item.leaf_confirmed
-                and not product_id and not expected and row.get('provenance', {}).get('sku_identity') != 'feed_mapping'):
+                and not product_id and not expected and row.get('provenance', {}).get('sku_identity') not in AUTO_SKU_SOURCES):
             # The operator's explicit manufacturer identity corrects the
             # unverified feed display field; it never changes supplier_code.
             values['manufacturer_code'] = item.source_code
@@ -581,7 +671,7 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
     if old:
         if old.request_hash != fingerprint:
             raise CatalogError('import_request_reused', 'Use a new request ID for a changed selection', 409)
-        return await public(db, old)
+        return await public(db, old, reopen=True)
     if not await db.scalar(select(Shop.id).where(Shop.code == request.shop, Shop.is_active.is_(True))):
         raise CatalogError('shop_not_found', 'Choose an active Hub shop', 404)
     # Mapping saves and catalog refresh use the same supplier lock. Keep the
@@ -776,7 +866,7 @@ async def patch_rows(db, draft, request):
     for id, row in rows.items():
         if (not row.get('hub_product_id') and not row.get('expected_hub_product_id') and id not in supplied_identities
                 and before_identity_fields[id] != (row['values'].get('brand'), row['values'].get('manufacturer_code'))
-                and row['values'].get('sku_identity') and row.get('provenance', {}).get('sku_identity') != 'feed_mapping'):
+                and row['values'].get('sku_identity') and row.get('provenance', {}).get('sku_identity') not in AUTO_SKU_SOURCES):
             row['values']['sku_identity'] = {**row['values']['sku_identity'], 'leaf_confirmed': False}
     if replaced_ai:
         jobs = (await db.scalars(select(AiJob).where(AiJob.id.in_(replaced_ai)).with_for_update())).all()
@@ -1146,7 +1236,7 @@ async def execute_publications(tasks):
 async def prepare_ai(db, draft, request):
     expect(draft, request.expected_revision)
     assert_editable(draft)
-    document = deepcopy(draft.document)
+    document = deepcopy(await rechecked_document(db, draft))
     groups = defaultdict(list)
     for row in document['rows']:
         if row['values']['ai_enabled'] and not link_only(row):
@@ -1192,17 +1282,22 @@ async def prepare_ai(db, draft, request):
 async def start_ai(db, draft, request):
     expect(draft, request.expected_revision)
     assert_editable(draft)
-    ids = {r.get('ai_job_id') for r in draft.document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled'] and not link_only(r)}
+    document = await rechecked_document(db, draft)
+    ids = {r.get('ai_job_id') for r in document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled'] and not link_only(r)}
     jobs = (await db.scalars(select(AiJob).where(AiJob.id.in_(ids)).order_by(AiJob.id).with_for_update())).all()
     estimates = [job for job in jobs if job.status == 'estimate']
     if not estimates:
         raise CatalogError('import_ai_no_estimate', 'No AI estimate is waiting for confirmation', 409)
     for job in estimates:
-        if any(r['values'].get('ai_category_profile', 'auto') != r.get('ai_baseline', {}).get('ai_category_profile', 'auto')
-               for r in draft.document['rows'] if r.get('ai_job_id') == job.id):
-            raise CatalogError('import_ai_identity_changed', 'The category rule profile changed; prepare a new AI estimate', 409)
+        for row in document['rows']:
+            if row.get('ai_job_id') != job.id:
+                continue
+            baseline, values = row.get('ai_baseline', {}), row['values']
+            if (values.get('ai_category_profile', 'auto') != baseline.get('ai_category_profile', 'auto')
+                    or any(key in baseline and values.get(key) != baseline[key] for key in ('code', 'manufacturer_code', 'brand'))):
+                raise CatalogError('import_ai_identity_changed', 'Product identity or category profile changed; prepare a new AI estimate', 409)
         await ai_content.start(db, job)
-    changed(draft, deepcopy(draft.document), 'AI cost estimates explicitly confirmed', dirty=False)
+    changed(draft, deepcopy(document), 'AI cost estimates explicitly confirmed', dirty=False)
     await db.flush()
     return await public(db, draft)
 
@@ -1294,7 +1389,7 @@ def merge_ai_values(row, output, context, *, previous_output=None):
 async def apply_ai(db, draft, request, *, job_ids=None):
     expect(draft, request.expected_revision)
     assert_editable(draft)
-    document = deepcopy(draft.document)
+    document = deepcopy(await rechecked_document(db, draft))
     ids = {r.get('ai_job_id') for r in document['rows'] if r.get('ai_job_id') and r['values']['ai_enabled'] and not link_only(r)}
     if job_ids is not None:
         ids &= set(job_ids)
