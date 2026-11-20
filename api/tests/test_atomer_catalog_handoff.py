@@ -424,6 +424,30 @@ class HandoffDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await db.execute(text('ALTER TABLE synthetic_future_writer ALTER COLUMN document TYPE json USING document::json'))
         self.assertFalse((await self.current())['eligible'])
 
+    async def test_only_the_known_brand_portal_metadata_shape_is_exempt(self):
+        async def store(value):
+            async with self.base.transaction() as db:
+                await db.execute(text("UPDATE sku_brands SET suppliers=CAST(:links AS jsonb) WHERE code='BB'"),
+                                 {'links': json.dumps(value)})
+
+        async def assert_blocker():
+            current = await self.current()
+            self.assertFalse(current['eligible'])
+            self.assertIn({'code': 'catalog_handoff_writer_schema_unverified', 'table': 'sku_brands'},
+                          current['blockers'])
+            self.assertTrue(any(b.get('table') == 'json:sku_brands' for b in current['blockers']))
+
+        await store([{'name': 'SYN-KEEP', 'url': 'https://b2b.example.org/account'}])
+        current = await self.current()
+        self.assertTrue(current['eligible'], current['blockers'])
+        self.assertEqual(current['writer_inventory']['facts']['json:sku_brands']['count'], 0)
+        await store([{'name': 'label', 'url': '', 'future_intent': {'unknown_target': 'disjoint'}}])
+        await assert_blocker()
+        await store([])
+        async with self.base.transaction() as db:
+            await db.execute(text('ALTER TABLE sku_brands ADD COLUMN future_command jsonb'))
+        await assert_blocker()
+
     async def test_real_installed_writer_schema_and_bounded_incomplete_inventory(self):
         async with self.sessions() as db:
             columns = await service.scope_inventory.schema(db)

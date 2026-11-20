@@ -416,14 +416,19 @@ async def writers(db, columns, scope, identities, candidate):
         condition = f't.{dependencies.quoted(column)}=ANY(CAST(:ids AS bigint[])) AND ({open_condition(table, columns[table])})'
         facts['fk:' + table + '.' + column] = await _summary(db, table, condition, params)
     for table, fields in sorted(columns.items()):
-        if table in LOCAL_FACTS or table in scan.TABLES or not {'json', 'jsonb'} & set(fields.values()):
+        if table in LOCAL_FACTS or table in scan.TABLES:
+            continue
+        if table != 'sku_brands' and not {'json', 'jsonb'} & set(fields.values()):
             continue
         recognized = (table in WRITER_JSON and 'json' not in fields.values()
             and {k for k, v in fields.items() if v == 'jsonb'} == WRITER_JSON[table])
         # Unknown numeric keys and completed-looking labels cannot hide a new
         # writer. Only explicitly interpreted schemas get a disjoint/terminal
         # exception; unknown nonempty JSON tables hold globally.
-        condition = mentions + ' AND (' + open_condition(table, fields) + ')' if recognized else 'true'
+        if table == 'sku_brands':
+            condition = dependencies.sku_brand_writer_condition(fields)
+        else:
+            condition = mentions + ' AND (' + open_condition(table, fields) + ')' if recognized else 'true'
         facts['json:' + table] = await _summary(db, table, condition, params)
         if not recognized and facts['json:' + table]['count']:
             blockers.append(dict(code='catalog_handoff_writer_schema_unverified', table=table))
