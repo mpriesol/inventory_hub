@@ -243,7 +243,9 @@ async def preview(db, payload):
         identity["group_code"] = group
         brand_id = await sku_policy.registered_brand_id(db, request.sku_identity.brand)
         brand = await db.get(SkuBrand, brand_id) if brand_id else None
-        if brand:
+        if brand and brand.archived:
+            item["reasons"].append("sku_brand_archived")
+        elif brand:
             item["proposed_sku"] = f"{brand.code}-{request.sku_identity.source_code}"
         result = await sku_policy.preview_sku(db, request.sku_identity, barcodes=identity["barcodes"],
                                               expected_product_id=product.id)

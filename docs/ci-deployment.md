@@ -110,8 +110,7 @@ The image must still be available from GHCR. The release's image tags, serial
 execution, migration order, phase errors and readiness checks are unchanged.
 
 The server pulls images, then executes `python -m inventory_hub.migrate` in one
-temporary API container. Its explicit list invokes forty-four upgrade
-modules: `005`–`038`, then `046`–`055`. The `atomer_review_migrate` module
+temporary API container. Its explicit list invokes 48 upgrade modules numbered `005`–`038` and `046`–`059`. The `atomer_review_migrate` module
 executes SQL `038`–`045` together in its transaction. Each module retains its
 own transaction and advisory lock; this is not one combined database transaction.
 The runner retries only the failed module's `main()` when psycopg2 raises

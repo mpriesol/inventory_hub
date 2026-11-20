@@ -42,7 +42,7 @@ class SupplierCardLinksDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for name in ('001_schema.sql', '004_shop_product_content.sql', '012_product_editor.sql',
-                         '028_supplier_card_links.sql', '028_supplier_card_links.sql', '029_sku_policy.sql'):
+                         '028_supplier_card_links.sql', '028_supplier_card_links.sql', '029_sku_policy.sql', '059_sku_brand_management.sql'):
                 await connection.execute((root / name).read_text())
             await apply_current_core_schema(connection)
         finally:

@@ -35,7 +35,7 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await catalog_db.CatalogDatabaseTests.asyncSetUp(self)
         async with self.engine.begin() as connection:
             raw = await connection.get_raw_connection()
-            for name in ('005_ai_content.sql', '012_product_editor.sql', '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql', '029_sku_policy.sql'):
+            for name in ('005_ai_content.sql', '012_product_editor.sql', '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql', '029_sku_policy.sql', '059_sku_brand_management.sql'):
                 sql = (Path(__file__).resolve().parents[2] / 'infra/db-init' / name).read_text()
                 await raw.driver_connection.execute(sql)
                 if name == '022_product_import_drafts.sql':

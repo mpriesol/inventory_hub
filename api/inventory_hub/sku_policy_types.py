@@ -54,12 +54,12 @@ class SkuIdentityInput(PolicyModel):
         return self
 
 
-class BrandCreate(PolicyModel):
+class BrandFields(PolicyModel):
     name: StrictStr
     code: StrictStr = Field(pattern=r"^[A-Z]{2}$")
     kind: Literal["brand", "service", "unbranded"] = "brand"
-    aliases: list[StrictStr] = Field(default_factory=list, max_length=50)
-    source_ref: StrictStr
+    aliases: list[StrictStr] = Field(default_factory=list)
+    source_ref: StrictStr | None = Field(default=None, max_length=2000)
 
     @field_validator("name")
     @classmethod
@@ -73,8 +73,30 @@ class BrandCreate(PolicyModel):
 
     @field_validator("source_ref")
     @classmethod
-    def evidence_text(cls, value):
-        return exact_text(value, 2000)
+    def source_lines(cls, value):
+        if value is not None:
+            for line in value.split("\n"):
+                exact_text(line, 2000)
+        return value
+
+
+class BrandSnapshot(BrandFields):
+    archived: StrictBool | None = None
+
+
+class BrandCreate(BrandFields):
+    aliases: list[StrictStr] = Field(default_factory=list, max_length=50)
+    source_ref: StrictStr = Field(max_length=2000)
+
+
+class BrandUpdate(BrandCreate):
+    # Existing registries can have more spellings via the one-at-a-time alias endpoint.
+    aliases: list[StrictStr] = Field(default_factory=list)
+    expected: BrandSnapshot
+
+
+class BrandRemove(PolicyModel):
+    expected: BrandSnapshot
 
 
 class BrandAliasCreate(PolicyModel):

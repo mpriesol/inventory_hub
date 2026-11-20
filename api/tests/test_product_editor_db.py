@@ -48,7 +48,7 @@ class ProductEditorDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute((self.sql_root / "019_stock_tracking.sql").read_text())
             await connection.execute("CREATE TYPE payment_status AS ENUM ('unpaid', 'partial', 'paid')")
             for filename in ("002_invoice_management.sql", "004_shop_product_content.sql", "007_order_stock.sql",
-                             "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql"):
+                             "011_fifo.sql", "012_product_editor.sql", "014_supplier_availability.sql", "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql", "059_sku_brand_management.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
             await apply_current_core_schema(connection)
         finally:

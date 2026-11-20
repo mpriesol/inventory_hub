@@ -63,6 +63,7 @@ MIGRATIONS = (
     "receiving_manual_migrate",      # 056; explicit manual receipts and reversible draft archival
     "setting_catalogs_migrate",      # 057; shared dictionaries, no stock authority changes
     "supplier_availability_policy_migrate",  # 058; missing-feed policy and evidence history
+    "sku_brand_management_migrate",   # 059; brand archival and used prefix reservations
 )
 
 

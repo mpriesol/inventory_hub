@@ -52,11 +52,17 @@ výrobok a nestará sa o jeho jedinečnosť. Dodávateľský kód sa nezmení a 
 
 ## Ručné overenie a existujúce produkty
 
-**Nastavenia → Výrobcovia a prefixy SKU** zobrazujú aktuálny register s
-vyhľadávaním podľa názvu, prefixu a aliasov. V príprave produktov je rovnaká
-tabuľka dostupná cez **Nastaviť SKU**. Z nej možno vybrať existujúceho výrobcu
-a vo formulári overiť jeho prefix. Chýbajúci kód a chýbajúca registrácia
-výrobcu majú samostatné hlásenia.
+V **Nastavenia → Výrobcovia a prefixy SKU** môžete výrobcu pridať, upraviť
+alebo odobrať. Hľadať sa dá podľa výrobcu, prefixu, iného zápisu mena aj
+zdroja. Jeden výrobca má jeden aktívny prefix pre všetkých dodávateľov.
+Pri premenovaní možno zachovať pôvodné meno ako alias, aby ho Hub naďalej
+rozpoznal vo feede. Väčší počet zdrojov pre jednu značku sa zadáva po riadkoch.
+
+Zmena prefixu platí pri pridelení nových SKU. Karta, ktorá už má pridelené SKU,
+si ho ponechá. Predtým použitý prefix sa rezervuje pre pôvodnú značku. Odobratie
+používanej značky ju presunie do **Archívu**, odkiaľ ju možno obnoviť. Značku
+bez histórie či používaných zápisov možno po potvrdení odstrániť. V príprave
+produktov možno aktívneho výrobcu vybrať cez **Nastaviť SKU**.
 
 Bez potvrdeného výrobného poľa možno pri príprave novej karty skontrolovať
 výrobcu, opraviť výrobný kód a výslovne potvrdiť konkrétny variant/balenie.

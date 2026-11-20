@@ -7,11 +7,11 @@ work. Preview is read-only; recording a proof never renames an existing card.
 from hashlib import sha256
 import json
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, func, select, text
 
-from inventory_hub.db_models import Product, Supplier
-from inventory_hub.sku_policy_models import ProductSkuIdentity, SkuBrand, SkuBrandAlias
-from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, SkuIdentityInput
+from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier
+from inventory_hub.sku_policy_models import ProductSkuIdentity, SkuBrand, SkuBrandAlias, SkuBrandReservedCode
+from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, BrandSnapshot, BrandUpdate, SkuIdentityInput
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index, verified_barcodes
 
 
@@ -46,27 +46,55 @@ async def registered_brand_id(db, name):
     return brand.id if brand else None
 
 
+def _registry_rows():
+    # Aggregate each one-to-many association before joining them. This yields one
+    # coherent row per manufacturer even with many aliases and retired codes.
+    aliases = (select(SkuBrandAlias.brand_id, func.array_agg(SkuBrandAlias.alias).label("names"))
+               .group_by(SkuBrandAlias.brand_id).subquery())
+    reserved = (select(SkuBrandReservedCode.brand_id, func.array_agg(SkuBrandReservedCode.code).label("codes"))
+                .group_by(SkuBrandReservedCode.brand_id).subquery())
+    return (select(SkuBrand, aliases.c.names, reserved.c.codes)
+            .outerjoin(aliases, aliases.c.brand_id == SkuBrand.id)
+            .outerjoin(reserved, reserved.c.brand_id == SkuBrand.id))
+
+
+def _registry_row(brand, names, codes):
+    return {"id": brand.id, "code": brand.code, "name": brand.name, "kind": brand.kind,
+            "source_ref": brand.source_ref, "aliases": sorted(names or ()), "archived": brand.archived,
+            "reserved_codes": sorted(code for code in codes or () if code != brand.code)}
+
+
 async def _brand_result(db, brand):
-    aliases = list((await db.scalars(select(SkuBrandAlias.alias).where(SkuBrandAlias.brand_id == brand.id)
-                                   .order_by(SkuBrandAlias.alias))).all())
-    return {"id": brand.id, "code": brand.code, "name": brand.name, "kind": brand.kind, "aliases": aliases}
+    row = (await db.execute(_registry_rows().where(SkuBrand.id == brand.id))).one()
+    return _registry_row(*row)
 
 
-async def list_brands(db):
-    brands = list((await db.scalars(select(SkuBrand).order_by(SkuBrand.name, SkuBrand.id))).all())
-    aliases = list((await db.scalars(select(SkuBrandAlias).order_by(SkuBrandAlias.alias))).all())
-    return {"brands": [{"id": row.id, "code": row.code, "name": row.name, "kind": row.kind,
-                        "aliases": [alias.alias for alias in aliases if alias.brand_id == row.id]}
-                       for row in brands]}
+async def list_brands(db, *, include_archived=False):
+    query = _registry_rows().order_by(SkuBrand.name, SkuBrand.id)
+    if not include_archived:
+        query = query.where(SkuBrand.archived.is_(False))
+    return {"brands": [_registry_row(*row) for row in await db.execute(query)]}
+
+
+async def _check_brand_collisions(db, item, *, excluding_id=None):
+    aliases = {brand_key(value): value for value in [*item.aliases, item.name]}
+    codes = select(SkuBrand.id).where(SkuBrand.code == item.code)
+    reservations = select(SkuBrandReservedCode.brand_id).where(SkuBrandReservedCode.code == item.code)
+    names = select(SkuBrandAlias.brand_id).where(SkuBrandAlias.alias_key.in_(aliases))
+    if excluding_id is not None:
+        codes = codes.where(SkuBrand.id != excluding_id)
+        reservations = reservations.where(SkuBrandReservedCode.brand_id != excluding_id)
+        names = names.where(SkuBrandAlias.brand_id != excluding_id)
+    if await db.scalar(codes.limit(1)) or await db.scalar(reservations):
+        raise SkuPolicyError("sku_brand_code_taken")
+    if await db.scalar(names.limit(1)):
+        raise SkuPolicyError("sku_brand_alias_taken")
+    return aliases
 
 
 async def create_brand(db, item: BrandCreate, *, actor="operator-token"):
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
-    aliases = {brand_key(value): value for value in [item.name, *item.aliases]}
-    if await db.scalar(select(SkuBrand.id).where(SkuBrand.code == item.code)):
-        raise SkuPolicyError("sku_brand_code_taken")
-    if await db.scalar(select(SkuBrandAlias.brand_id).where(SkuBrandAlias.alias_key.in_(aliases))):
-        raise SkuPolicyError("sku_brand_alias_taken")
+    aliases = await _check_brand_collisions(db, item)
     brand = SkuBrand(code=item.code, name=item.name, kind=item.kind, source_ref=item.source_ref, created_by=actor)
     db.add(brand)
     await db.flush()
@@ -76,11 +104,108 @@ async def create_brand(db, item: BrandCreate, *, actor="operator-token"):
     return await _brand_result(db, brand)
 
 
+async def _brand_for_edit(db, brand_id, expected: BrandSnapshot):
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
+    brand = await db.get(SkuBrand, brand_id, populate_existing=True)
+    if brand is None:
+        raise SkuPolicyError("sku_brand_not_found", 404)
+    rows = await db.scalars(select(SkuBrandAlias).where(SkuBrandAlias.brand_id == brand_id)
+                            .execution_options(populate_existing=True))
+    aliases = {row.alias_key: row for row in rows}
+    if ((brand.name, brand.code, brand.kind) != (expected.name, expected.code, expected.kind)
+            or {row.alias for row in aliases.values()} != set(expected.aliases)
+            or expected.source_ref is not None and expected.source_ref != brand.source_ref
+            or expected.archived is not None and expected.archived != brand.archived):
+        raise SkuPolicyError("sku_brand_changed")
+    return brand, aliases
+
+
+async def _prefix_was_used(db, brand):
+    # Include legacy cards, their old SKU aliases and immutable allocation proofs.
+    pattern = f"{brand.code}-%"
+    lookups = (select(Product.id).where(Product.sku.ilike(pattern)),
+               select(ProductIdentifier.id).where(ProductIdentifier.identifier_type == IdentifierType.internal_sku,
+                                                   ProductIdentifier.value.ilike(pattern)),
+               select(ProductSkuIdentity.id).where(ProductSkuIdentity.brand_id == brand.id,
+                                                   ProductSkuIdentity.allocated_sku.ilike(pattern)))
+    for lookup in lookups:
+        if await db.scalar(lookup.limit(1)):
+            return True
+    return False
+
+
+async def _brand_has_history(db, brand):
+    return (await db.scalar(select(ProductSkuIdentity.id).where(ProductSkuIdentity.brand_id == brand.id).limit(1))
+            or await db.scalar(select(SkuBrandReservedCode.code).where(SkuBrandReservedCode.brand_id == brand.id).limit(1))
+            or await _prefix_was_used(db, brand))
+
+
+async def _spellings_in_use(db, brand_id, keys):
+    if not keys:
+        return False
+    # Match the SKU resolver's Unicode casefold and whitespace handling.
+    # Scan distinct source spellings only when the operator removes a spelling.
+    on_cards = select(Product.brand).where(Product.brand.is_not(None))
+    on_proofs = select(ProductSkuIdentity.brand_raw).where(ProductSkuIdentity.brand_id == brand_id)
+    names = await db.scalars(on_cards.union(on_proofs))
+    return any(brand_key(value) in keys for value in names)
+
+
+async def update_brand(db, brand_id: int, item: BrandUpdate, *, actor="operator-token"):
+    brand, current = await _brand_for_edit(db, brand_id, item.expected)
+    if brand.archived:
+        raise SkuPolicyError("sku_brand_archived")
+    desired = await _check_brand_collisions(db, item, excluding_id=brand.id)
+    if brand.kind != item.kind and await _brand_has_history(db, brand):
+        raise SkuPolicyError("sku_brand_in_use")
+    removed = current.keys() - desired.keys()
+    if await _spellings_in_use(db, brand.id, removed):
+        raise SkuPolicyError("sku_brand_in_use")
+    if brand.code != item.code and await _prefix_was_used(db, brand):
+        # Keep historical ownership when switching back and forth between prefixes.
+        if await db.get(SkuBrandReservedCode, brand.code) is None:
+            db.add(SkuBrandReservedCode(code=brand.code, brand_id=brand.id))
+    for key in removed:
+        await db.delete(current[key])
+    for key, value in desired.items():
+        if key not in current:
+            db.add(SkuBrandAlias(alias_key=key, brand_id=brand.id, alias=value,
+                                 source_ref=item.source_ref, created_by=actor))
+        elif current[key].alias != value:
+            current[key].alias = value
+            current[key].source_ref = item.source_ref
+    brand.name, brand.code, brand.kind = item.name, item.code, item.kind
+    brand.source_ref = item.source_ref
+    await db.flush()
+    return await _brand_result(db, brand)
+
+
+async def remove_brand(db, brand_id: int, expected: BrandSnapshot):
+    brand, aliases = await _brand_for_edit(db, brand_id, expected)
+    if brand.archived or await _brand_has_history(db, brand) or await _spellings_in_use(db, brand.id, aliases.keys()):
+        brand.archived = True
+        await db.flush()
+        return {"removed": True, "id": brand_id, "archived": True}
+    await db.execute(delete(SkuBrandAlias).where(SkuBrandAlias.brand_id == brand.id))
+    await db.delete(brand)
+    await db.flush()
+    return {"removed": True, "id": brand_id, "archived": False}
+
+
+async def restore_brand(db, brand_id: int, expected: BrandSnapshot):
+    brand, _ = await _brand_for_edit(db, brand_id, expected)
+    brand.archived = False
+    await db.flush()
+    return await _brand_result(db, brand)
+
+
 async def add_brand_alias(db, brand_id, item: BrandAliasCreate, *, actor="operator-token"):
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     brand = await db.get(SkuBrand, brand_id)
     if not brand:
         raise SkuPolicyError("sku_brand_not_found", 404)
+    if brand.archived:
+        raise SkuPolicyError("sku_brand_archived")
     key = brand_key(item.alias)
     existing = await db.get(SkuBrandAlias, key)
     if existing and existing.brand_id != brand.id:
@@ -162,8 +287,23 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
                            reasons=["sku_verified_identity_conflict"], candidates=[expected_product_id, claim_owner])
     identity = RemoteIdentity(0, proposed, barcodes=tuple(barcodes), supplier_id=supplier_id,
                               supplier_sku=supplier_sku, expected_product_id=expected_product_id or claim_owner)
-    index = await load_identity_index(db, 0, [identity], local=True)
+    retired = []
+    if brand:
+        codes = await db.scalars(select(SkuBrandReservedCode.code).where(
+            SkuBrandReservedCode.brand_id == brand.id, SkuBrandReservedCode.code != brand.code))
+        retired = [RemoteIdentity(0, f"{code}-{item.source_code}") for code in codes]
+    index = await load_identity_index(db, 0, [identity, *retired], local=True)
     resolution = index.resolve(identity)
+    # A legacy card with a formerly used prefix might have no immutable proof
+    # yet. Keep the same independent-evidence requirement as a current-prefix hit.
+    for old_code in retired:
+        historical = index.resolve(old_code)
+        if historical.status == "conflict":
+            return _result("conflict", sku=proposed, brand_id=brand.id, reasons=historical.reasons,
+                           candidates=historical.candidate_product_ids)
+        if historical.product_id and historical.product_id != resolution.product_id:
+            return _result("conflict", sku=proposed, brand_id=brand.id, reasons=["sku_source_scope_collision"],
+                           candidates=[historical.product_id, *resolution.candidate_product_ids])
     if resolution.status == "conflict":
         return _result("conflict", sku=proposed or None, brand_id=brand.id if brand else None,
                        reasons=resolution.reasons, candidates=resolution.candidate_product_ids)
@@ -203,6 +343,8 @@ async def preview_sku(db, item: SkuIdentityInput | None, *, barcodes=(), supplie
                        candidates=[product.id], brand_id=brand.id if brand else None)
     if item is None:
         return _result("blocked", reasons=["sku_identity_required"])
+    if brand.archived:
+        return _result("blocked", brand_id=brand.id, reasons=["sku_brand_archived"])
     # Supplier aliases and GTINs can still resolve an existing card above. They
     # never supply the manufacturer product code for a newly allocated SKU.
     if item_type != "service":
