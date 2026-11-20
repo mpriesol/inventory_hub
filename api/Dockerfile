@@ -81,4 +81,7 @@ COPY infra/db-init/058_supplier_availability_policy.sql /app/inventory_hub/migra
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000
-CMD ["uvicorn", "inventory_hub.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Caddy is the only ingress (the API publishes no host port). Trust its
+# X-Forwarded-For so login rate limits see the real client address instead of
+# one shared Caddy container IP. Caddy ignores client-supplied X-Forwarded-For.
+CMD ["uvicorn", "inventory_hub.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

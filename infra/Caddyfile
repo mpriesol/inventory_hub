@@ -1,6 +1,14 @@
 hub.biketrek.sk {
   encode gzip
 
+  # Site-wide transport and browser hardening (applies to Hub, API and /sps).
+  header {
+    Strict-Transport-Security "max-age=31536000"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    -Server
+  }
+
   handle_path /api/* {
     reverse_proxy api:8000
   }
@@ -10,6 +18,14 @@ hub.biketrek.sk {
   }
 
   handle {
+    # The Hub SPA only: no framing, no foreign scripts, API calls same-origin.
+    # Start as Report-Only; switch the header name to Content-Security-Policy
+    # after the browser console shows no violations during normal Hub work.
+    header {
+      Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https: http:; connect-src 'self'; media-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+      X-Frame-Options "DENY"
+      Permissions-Policy "camera=(self), microphone=(), geolocation=(), payment=()"
+    }
     root * /srv
     try_files {path} /index.html
     file_server

@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlsplit
 
 from lxml import etree, html
 
-from inventory_hub.adapters.paul_lange_catalog import _source_fields
+from inventory_hub.adapters.paul_lange_catalog import _source_fields, http_url
 from inventory_hub.catalog_types import CatalogParameter, CatalogPrices, CatalogProduct
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.supplier_prefix import canonical_supplier_sku, get_supplier_prefix
@@ -236,7 +236,7 @@ def parse_catalog(path, supplier, cfg, feed_key="products"):
             warnings.append("missing_images")
         product = CatalogProduct(supplier=supplier, feed_key=feed_key, code=code,
             shop_code=canonical_supplier_sku(get_supplier_prefix(cfg), code), name=value("name"),
-            brand=value("brand") or None, url=value("url"), description=value("description"),
+            brand=value("brand") or None, url=http_url(value("url")), description=value("description"),
             category=value("category") or None, category_code=value("category_code") or None,
             images=images, parameters=params + attrs, availability=availability or None,
             supplier_available=available, supplier_stock_raw="true" if available is True else "false" if available is False else None,
