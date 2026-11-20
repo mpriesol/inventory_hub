@@ -189,6 +189,23 @@ change reverts orchestration, not already committed migrations; the migration
 modules remain independently callable. See the [setup and recovery guide](../api/POSTGRES_SETUP.md)
 for the production and rollback boundaries.
 
+## Security headers and proxy addresses (20 November 2026)
+
+The API image starts uvicorn with `--proxy-headers --forwarded-allow-ips *` so
+login rate limits see the client address forwarded by Caddy instead of one
+shared Caddy container address. This relies on the API publishing no host port.
+A server Compose `command:` override for `api` would silently drop it.
+
+`infra/Caddyfile` adds HSTS, `nosniff`, `Referrer-Policy` and `-Server` site-wide,
+and CSP (Report-Only), `X-Frame-Options: DENY` and
+`Permissions-Policy: camera=(self)` for the SPA only. The deployment workflow
+does not copy this file: the server-managed `caddy/Caddyfile` (which also routes
+`/sps/`) must be updated by hand, validated with `caddy validate` and reloaded.
+Switch CSP to enforcing only after normal Hub work shows no violations.
+
+FastAPI stays below 0.137: newer releases change `app.routes` so included routers
+are no longer flattened, which breaks the route-enumeration security test.
+
 ## SPS proxy network (23 October 2026)
 
 The separately deployed SPS receiver uses the external Docker network
