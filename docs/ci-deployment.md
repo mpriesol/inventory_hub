@@ -191,10 +191,13 @@ for the production and rollback boundaries.
 
 ## Security headers and proxy addresses (20 November 2026)
 
-The API image starts uvicorn with `--proxy-headers --forwarded-allow-ips *` so
-login rate limits see the client address forwarded by Caddy instead of one
-shared Caddy container address. This relies on the API publishing no host port.
-A server Compose `command:` override for `api` would silently drop it.
+Login rate limits must see the client address forwarded by Caddy, not one
+shared Caddy container address. The server base Compose overrides the API
+command (`uvicorn ... --root-path /api`), so the image CMD flags do not apply in
+production. The generated `docker-compose.ai-content.yml` overlay therefore sets
+`FORWARDED_ALLOW_IPS: "*"`; uvicorn reads it and enables proxy headers by
+default. This relies on the API publishing no host port. Verify after deploy:
+`docker compose ... exec -T api printenv FORWARDED_ALLOW_IPS` prints `*`.
 
 `infra/Caddyfile` adds HSTS, `nosniff`, `Referrer-Policy` and `-Server` site-wide,
 and CSP (Report-Only), `X-Frame-Options: DENY` and
