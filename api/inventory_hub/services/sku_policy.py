@@ -60,7 +60,8 @@ def _registry_rows():
 
 def _registry_row(brand, names, codes):
     return {"id": brand.id, "code": brand.code, "name": brand.name, "kind": brand.kind,
-            "source_ref": brand.source_ref, "aliases": sorted(names or ()), "archived": brand.archived,
+            "source_ref": brand.source_ref, "suppliers": brand.suppliers, "aliases": sorted(names or ()),
+            "archived": brand.archived,
             "reserved_codes": sorted(code for code in codes or () if code != brand.code)}
 
 
@@ -95,7 +96,8 @@ async def _check_brand_collisions(db, item, *, excluding_id=None):
 async def create_brand(db, item: BrandCreate, *, actor="operator-token"):
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": IDENTITY_WRITE_LOCK})
     aliases = await _check_brand_collisions(db, item)
-    brand = SkuBrand(code=item.code, name=item.name, kind=item.kind, source_ref=item.source_ref, created_by=actor)
+    brand = SkuBrand(code=item.code, name=item.name, kind=item.kind, source_ref=item.source_ref, created_by=actor,
+                     suppliers=[supplier.model_dump() for supplier in item.suppliers])
     db.add(brand)
     await db.flush()
     db.add_all([SkuBrandAlias(alias_key=key, brand_id=brand.id, alias=value,
@@ -115,7 +117,9 @@ async def _brand_for_edit(db, brand_id, expected: BrandSnapshot):
     if ((brand.name, brand.code, brand.kind) != (expected.name, expected.code, expected.kind)
             or {row.alias for row in aliases.values()} != set(expected.aliases)
             or expected.source_ref is not None and expected.source_ref != brand.source_ref
-            or expected.archived is not None and expected.archived != brand.archived):
+            or expected.archived is not None and expected.archived != brand.archived
+            or "suppliers" in expected.model_fields_set
+            and [supplier.model_dump() for supplier in expected.suppliers] != brand.suppliers):
         raise SkuPolicyError("sku_brand_changed")
     return brand, aliases
 
@@ -176,6 +180,8 @@ async def update_brand(db, brand_id: int, item: BrandUpdate, *, actor="operator-
             current[key].source_ref = item.source_ref
     brand.name, brand.code, brand.kind = item.name, item.code, item.kind
     brand.source_ref = item.source_ref
+    if "suppliers" in item.model_fields_set:
+        brand.suppliers = [supplier.model_dump() for supplier in item.suppliers]
     await db.flush()
     return await _brand_result(db, brand)
 

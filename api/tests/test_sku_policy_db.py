@@ -131,6 +131,29 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await raw.driver_connection.execute(migration)
             self.assertEqual((await service.list_brands(db, include_archived=True))["brands"], [])
 
+    async def test_structured_supplier_links_round_trip_and_guard_concurrent_edits(self):
+        async with self.transaction() as db:
+            fields = {"name": "Example maker", "code": "XR", "source_ref": "Catalogue page"}
+            links = [{"name": "Sample B2B", "url": "https://b2b.example.org/account/"},
+                     {"name": "Telephone orders", "url": ""}]
+            created = await service.create_brand(db, BrandCreate(**fields, suppliers=links))
+            brand_id = created["id"]
+            stored = next(row for row in (await service.list_brands(db))["brands"] if row["id"] == brand_id)
+            self.assertEqual(stored["suppliers"], links)
+            original = snapshot_of(stored)
+            edited = await service.update_brand(db, brand_id, BrandUpdate(
+                **fields, expected=original, suppliers=[links[1]]))
+            self.assertEqual(edited["suppliers"], [links[1]])
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_changed"):
+                await service.remove_brand(db, brand_id, original)
+            # Older clients neither compare nor replace portal links.
+            older = BrandSnapshot(**original.model_dump(exclude={"suppliers"}))
+            retained = await service.update_brand(db, brand_id, BrandUpdate(**fields, expected=older))
+            self.assertEqual(retained["suppliers"], [links[1]])
+            cleared = await service.update_brand(db, brand_id, BrandUpdate(
+                **fields, expected=snapshot_of(retained), suppliers=[]))
+            self.assertEqual(cleared["suppliers"], [])
+
     async def test_prefix_change_archive_and_restore_preserve_existing_proof_and_sku(self):
         async with self.transaction() as db:
             product = await self.add_product(db, sku="TP-0001410")

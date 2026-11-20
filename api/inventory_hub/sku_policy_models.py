@@ -1,7 +1,8 @@
 """Registered namespaces and immutable provenance of reviewed SKU identities."""
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text, false, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text, false, func, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from inventory_hub.database import Base
@@ -13,6 +14,7 @@ class SkuBrand(Base):
     code: Mapped[str] = mapped_column(String(2), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    suppliers: Mapped[list[dict[str, str]]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=false())
     source_ref: Mapped[str] = mapped_column(Text, nullable=False)
     created_by: Mapped[str] = mapped_column(String(100), nullable=False)

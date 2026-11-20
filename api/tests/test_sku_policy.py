@@ -11,7 +11,7 @@ from pydantic import SecretStr, ValidationError
 from inventory_hub.database import get_session
 from inventory_hub.routers import sku_policy as routes
 from inventory_hub.settings import settings
-from inventory_hub.sku_policy_types import BrandCreate, SkuIdentityInput
+from inventory_hub.sku_policy_types import BrandCreate, BrandSupplier, SkuIdentityInput
 from inventory_hub.services import sku_policy as service
 
 
@@ -46,6 +46,26 @@ class SkuPolicyInputTests(TestCase):
         for code in ("tp", "T", "TOP", "ŤP", "T1"):
             with self.subTest(code=code), self.assertRaises(ValidationError):
                 BrandCreate(name="Test", code=code, source_ref="Test registry")
+
+    def test_b2b_links_accept_only_public_portal_addresses_and_unique_supplier_names(self):
+        portal = BrandSupplier(name="  Sample   Trade ", url="https://b2b.example.org/account/")
+        self.assertEqual(portal.name, "Sample Trade")
+        self.assertEqual(BrandSupplier(name="Manual").url, "")
+        for query in ("act=noredirect", "route=account/login", "lang=sk&category=123"):
+            url = f"https://b2b.example.org/?{query}"
+            self.assertEqual(BrandSupplier(name="Example", url=url).url, url)
+        for invalid in ("example.org", "javascript:alert(1)", "https://user:pass@example.org",
+                        "https://example.org/catalog?key=value", "https://example.org/#session",
+                        "https://example.org/?%61ccess_token=x", "https://example.org/?PHPSESSID=x",
+                        "https://example.org/?X-Amz-Signature=x", "https://example.org/?next=/account",
+                        "https://example.org/?r=https%3A%2F%2Fexample.org%2F%3Ftoken%3Dx",
+                        "https://example.org/?r=%252F%252Fevil.example",
+                        "https://example.org:123456/", "https://bad host.com/", "https://example.org/\nnext"):
+            with self.subTest(url=invalid), self.assertRaises(ValidationError):
+                BrandSupplier(name="Sample", url=invalid)
+        with self.assertRaises(ValidationError):
+            BrandCreate(name="Maker", code="MK", source_ref="Verified catalog",
+                        suppliers=[portal, BrandSupplier(name="SAMPLE    Trade")])
 
     def test_upgrade_is_packaged_and_ordered_without_product_or_stock_backfill(self):
         root = Path(__file__).resolve().parents[2]

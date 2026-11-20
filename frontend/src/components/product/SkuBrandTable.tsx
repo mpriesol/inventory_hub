@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SkuBrand } from '../../api/skuPolicy';
+import { BrandSupplierLinks } from './SkuBrandSuppliers';
 import { Button } from '../ui/Button.new';
 import './SkuBrandTable.css';
 
@@ -17,9 +18,8 @@ function RegistrySource({ value }: { value?: string }) {
   const entries = lines.map(({ label, url }, index) => <div key={index}>
     {url ? <a href={url} target="_blank" rel="noreferrer">{label}</a> : label}
   </div>);
-  if (lines.length < 2) return <>{entries}</>;
   return <details>
-    <summary>{lines[0].label} (+{lines.length - 1})</summary>
+    <summary>{t('skuPolicy.registry.showSources', { count: lines.length })}</summary>
     {entries}
   </details>;
 }
@@ -36,9 +36,12 @@ export function SkuBrandTable({ brands, onSelect, onEdit, onRemove, onRestore }:
   const [archived, setArchived] = useState(false);
   const [page, setPage] = useState(0);
   const query = search.trim().toLocaleLowerCase();
+  const matches = (value: string) => value.toLocaleLowerCase().includes(query);
   const rows = brands
     .filter(brand => !!brand.archived === archived)
-    .filter(brand => [brand.name, brand.code, onEdit ? brand.source_ref || '' : '', ...(onEdit ? brand.reserved_codes ?? [] : []), ...brand.aliases].some(value => value.toLocaleLowerCase().includes(query)))
+    .filter(brand => [brand.name, brand.code, ...brand.aliases].some(matches) || (onEdit && (
+      matches(brand.source_ref || '') || brand.reserved_codes?.some(matches) ||
+      brand.suppliers?.some(supplier => matches(supplier.name) || matches(supplier.url)))))
     .sort((left, right) => left.name.localeCompare(right.name, i18n.resolvedLanguage));
 
   const pages = Math.ceil(rows.length / pageSize);
@@ -61,6 +64,7 @@ export function SkuBrandTable({ brands, onSelect, onEdit, onRemove, onRestore }:
           <thead><tr>
             <th scope="col">{t('skuPolicy.registry.manufacturer')}</th>
             <th scope="col">{t('skuPolicy.registry.prefix')}</th>
+            {onEdit && <th scope="col">{t('skuPolicy.registry.suppliers')}</th>}
             <th scope="col">{t('skuPolicy.registry.aliases')}</th>
             {onEdit && <th scope="col">{t('skuPolicy.registry.source')}</th>}
             {onEdit && <th scope="col">{t('skuPolicy.registry.actions')}</th>}
@@ -73,6 +77,7 @@ export function SkuBrandTable({ brands, onSelect, onEdit, onRemove, onRestore }:
               <td><code>{brand.code}</code>
                 {onEdit && !!brand.reserved_codes?.length && <small className="sku-brand-previous">{t('skuPolicy.registry.previousCodes', { codes: brand.reserved_codes.join(', ') })}</small>}
               </td>
+              {onEdit && <td><BrandSupplierLinks suppliers={brand.suppliers} /></td>}
               <td>{aliases.length ? aliases.join(', ') : '—'}</td>
               {onEdit && <td className="sku-brand-source"><RegistrySource value={brand.source_ref} /></td>}
               {onEdit && <td><div className="sku-registry-actions">

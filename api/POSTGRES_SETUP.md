@@ -131,7 +131,7 @@ Obe migrácie sú aditívne, zapojené za 055 a zabalené v API obraze. Samy nev
 
 ### Register výrobcov a prefixov SKU
 
-Migrácia `059_sku_brand_management.sql` dopĺňa stav archivácie výrobcu a tabuľku rezervovaných prefixov.
+Migrácia `059_sku_brand_management.sql` dopĺňa stav archivácie výrobcu, odkazy na dodávateľské B2B portály a tabuľku rezervovaných prefixov.
 Po zmene použitého prefixu si staré karty ponechajú svoj kód a výrobca svoj pôvodný identifikátor.
 Pri opakovaní migrácie 029 sa pôvodných sedem značiek dopĺňa iba pri založení novej tabuľky.
 Po prvom použití archivácie alebo zmene použitého prefixu ponechajte údaje migrácie 059

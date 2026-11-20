@@ -2,14 +2,15 @@ import React, { FormEvent, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { createSkuBrand, getSkuBrands, removeSkuBrand, restoreSkuBrand, SkuBrand, updateSkuBrand } from '../api/skuPolicy';
+import { BrandSuppliersEditor, supplierInputError } from '../components/product/SkuBrandSuppliers';
 import { SkuBrandTable } from '../components/product/SkuBrandTable';
 import { Button } from '../components/ui/Button.new';
 
 type Editor = { action: 'create' } | { action: 'edit' | 'remove' | 'restore'; brand: SkuBrand };
 type Outcome = 'saved' | 'removed' | 'archived' | 'restored';
 
-function BrandEditor({ editor, onDone, onCancel, onReload }: {
-  editor: Editor; onDone: (brand: SkuBrand, outcome: Outcome) => void; onCancel: () => void; onReload: () => void;
+function BrandEditor({ editor, brands, onDone, onCancel, onReload }: {
+  editor: Editor; brands: SkuBrand[]; onDone: (brand: SkuBrand, outcome: Outcome) => void; onCancel: () => void; onReload: () => void;
 }) {
   const { t } = useTranslation();
   const brand = editor.action === 'create' ? undefined : editor.brand;
@@ -17,6 +18,8 @@ function BrandEditor({ editor, onDone, onCancel, onReload }: {
   const [code, setCode] = useState(brand?.code ?? '');
   const [aliases, setAliases] = useState(brand?.aliases.filter(alias => alias !== brand.name).join('\n') ?? '');
   const [source, setSource] = useState(brand?.source_ref ?? '');
+  const [suppliers, setSuppliers] = useState(brand?.suppliers ?? []);
+  const supplierError = supplierInputError(suppliers);
   const [keepPreviousName, setKeepPreviousName] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -31,7 +34,7 @@ function BrandEditor({ editor, onDone, onCancel, onReload }: {
   const invalidAliases = (editor.action === 'create' && aliasValues.length > 50) || aliasValues.some(value => value.length > 100);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (busy || stale || (editing && (!name.trim() || !/^[A-Z]{2}$/.test(code) || invalidAliases))) return;
+    if (busy || stale || (editing && (!name.trim() || !/^[A-Z]{2}$/.test(code) || invalidAliases || supplierError))) return;
     setBusy(true);
     setError('');
     try {
@@ -42,12 +45,16 @@ function BrandEditor({ editor, onDone, onCancel, onReload }: {
         onDone(await restoreSkuBrand(editor.brand), 'restored');
       } else {
         const sourceRef = source.split('\n').map(line => line.trim()).filter(Boolean).join('\n');
-        const values = { name: name.trim(), code, aliases: aliasValues, kind: brand?.kind ?? 'brand', source_ref: sourceRef || 'operator:sku-registry' };
+        const values = { name: name.trim(), code, aliases: aliasValues, kind: brand?.kind ?? 'brand', source_ref: sourceRef || 'operator:sku-registry',
+          suppliers: suppliers.map(supplier => ({ name: supplier.name.trim(), url: supplier.url.trim() })) };
         const saved = editor.action === 'edit' ? await updateSkuBrand(editor.brand, values) : await createSkuBrand(values);
         onDone(saved, 'saved');
       }
     } catch (cause) {
-      setError((cause as { code?: string })?.code || 'registryWriteFailed');
+      const failure = cause as { code?: string; detail?: { loc?: (string | number)[] }[] };
+      const invalidPortal = Array.isArray(failure?.detail) && failure.detail.some(issue =>
+        issue.loc?.includes('suppliers') && issue.loc.includes('url'));
+      setError(invalidPortal ? 'sku_brand_supplier_url_invalid' : failure?.code || 'registryWriteFailed');
     } finally {
       setBusy(false);
     }
@@ -69,6 +76,8 @@ function BrandEditor({ editor, onDone, onCancel, onReload }: {
         </label>
         {renamed && <label className="sku-keep-name"><input type="checkbox" checked={keepPreviousName}
           onChange={event => setKeepPreviousName(event.target.checked)} />{t('skuPolicy.registry.keepName', { name: brand.name })}</label>}
+        <BrandSuppliersEditor brands={brands} suppliers={suppliers} onChange={setSuppliers} />
+        {supplierError && <p role="alert">{t(`skuPolicy.registry.${supplierError}`)}</p>}
         <label>{t('skuPolicy.registry.source')}
           <textarea rows={2} maxLength={2000} placeholder={t('skuPolicy.registry.sourceHint')} value={source} onChange={event => setSource(event.target.value)} />
         </label>
@@ -78,7 +87,7 @@ function BrandEditor({ editor, onDone, onCancel, onReload }: {
     <div className="sku-registry-actions">
       <Button type="button" variant="secondary" autoFocus={!editing} disabled={busy} onClick={onCancel}>{t('common.cancel')}</Button>
       {stale ? <Button type="button" onClick={onReload}>{t('skuPolicy.registry.reload')}</Button> :
-        <Button type="submit" variant={removing ? 'danger' : 'primary'} disabled={busy || (editing && invalidAliases)}>
+        <Button type="submit" variant={removing ? 'danger' : 'primary'} disabled={busy || (editing && (invalidAliases || !!supplierError))}>
           {t(removing ? 'skuPolicy.registry.remove' : restoring ? 'skuPolicy.registry.restore' : 'common.save')}
         </Button>}
     </div>
@@ -145,7 +154,7 @@ export function SkuBrandsPage() {
       <Button variant="secondary" onClick={reload}>{t('skuPolicy.retry')}</Button>
     </div> : brands ? <>
       {message && <p role="status">{message}</p>}
-      {editor && <BrandEditor editor={editor} onDone={done} onCancel={close} onReload={reload} />}
+      {editor && <BrandEditor editor={editor} brands={brands} onDone={done} onCancel={close} onReload={reload} />}
       <div hidden={!!editor}>
         <SkuBrandTable brands={brands} onEdit={brand => open({ action: 'edit', brand })}
           onRemove={brand => open({ action: 'remove', brand })} onRestore={brand => open({ action: 'restore', brand })} />

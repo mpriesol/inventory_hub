@@ -4,7 +4,8 @@ export interface SkuIdentityInput {
   brand: string; source_code: string; code_kind: 'manufacturer' | 'supplier' | 'gtin' | 'service' | 'unbranded';
   source_ref: string; leaf_confirmed: boolean; supplier_id?: number;
 }
-export interface SkuBrand { id: number; code: string; name: string; kind: 'brand' | 'service' | 'unbranded'; aliases: string[]; source_ref?: string; archived?: boolean; reserved_codes?: string[] }
+export interface SkuBrandSupplier { name: string; url: string }
+export interface SkuBrand { id: number; code: string; name: string; kind: 'brand' | 'service' | 'unbranded'; aliases: string[]; source_ref?: string; archived?: boolean; reserved_codes?: string[]; suppliers?: SkuBrandSupplier[] }
 export interface SkuPreview {
   status: 'new' | 'existing' | 'conflict' | 'blocked'; sku: string | null; product_id: number | null;
   reasons: string[]; candidate_product_ids: number[]; brand_id: number | null;
@@ -13,10 +14,10 @@ export interface SkuPreviewContext { item_type?: 'stock' | 'service'; barcodes?:
 export const emptySkuIdentity = (brand = '', source_code = ''): SkuIdentityInput => ({ brand, source_code, code_kind: 'manufacturer', source_ref: '', leaf_confirmed: false });
 export const getSkuBrands = (signal?: AbortSignal, includeArchived = false) =>
   hubRequest<{ brands: SkuBrand[] }>(`/api/sku-policy/brands${includeArchived ? '?include_archived=true' : ''}`, undefined, signal);
-type SkuBrandValues = Pick<SkuBrand, 'name' | 'code' | 'kind' | 'aliases' | 'source_ref'>;
+type SkuBrandValues = Pick<SkuBrand, 'name' | 'code' | 'kind' | 'aliases' | 'source_ref' | 'suppliers'>;
 type SkuBrandWrite = SkuBrandValues & { source_ref: string };
-function snapshot({ name, code, kind, aliases, source_ref, archived }: SkuBrand) {
-  return { name, code, kind, aliases, source_ref, archived };
+function snapshot({ name, code, kind, aliases, source_ref, archived, suppliers }: SkuBrand) {
+  return { name, code, kind, aliases, source_ref, archived, suppliers };
 }
 export const createSkuBrand = (body: SkuBrandWrite) => hubRequest<SkuBrand>('/api/sku-policy/brands', body);
 export const updateSkuBrand = (brand: SkuBrand, body: SkuBrandWrite) =>

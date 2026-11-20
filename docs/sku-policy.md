@@ -103,3 +103,12 @@ Existujúce overené e-shopové mapovania môžu mať vlastné pôvodné kódy.
 Pred odoslaním sa kontroluje obsadenosť produktových aj variantových kódov
 samostatne v každom cieľovom e-shope. Pridelenie alebo uloženie karty samo
 nevytvára zásobu, e-shopový produkt ani fyzický príjem.
+
+V API registra má každý výrobca pole `suppliers`. Každá položka obsahuje `name`
+a `url` s odkazom na prihlasovaciu alebo hlavnú stránku dodávateľského B2B.
+Verejné navigačné parametre ako `?act=noredirect` alebo `?route=account/login` možno zachovať.
+Pri dodávateľovi s ručným objednávaním sa používa prázdne `url`. Pole `source_ref`
+uchováva samostatné podklady na overenie značky. Pri úprave cez
+`PUT /api/sku-policy/brands/{id}` server porovná dodávateľov z `expected.suppliers`
+s aktuálnym zoznamom. Vynechané pole `suppliers` zachová väzby pri požiadavke
+zo staršej verzie aplikácie. Prázdny zoznam všetky väzby odoberie.

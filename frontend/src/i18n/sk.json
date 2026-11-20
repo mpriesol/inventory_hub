@@ -4795,8 +4795,8 @@
       "actions": "Akcie",
       "keepName": "Zachovať {{name}} ako ďalší názov výrobcu",
       "source": "Zdroj",
-      "sourceHint": "Dodávateľ alebo odkaz na katalóg (voliteľné)",
-      "searchSource": "Hľadať výrobcu, prefix, ďalší názov alebo zdroj",
+      "sourceHint": "Odkaz na katalóg alebo iný podklad overenia (voliteľné)",
+      "searchSource": "Hľadať podľa výrobcu, prefixu, dodávateľa, ďalšieho názvu alebo zdroja",
       "manual": "Ručný zápis",
       "aliasLines": "Ďalšie názvy výrobcu (každý na samostatný riadok)",
       "aliasLength": "Každý názov môže mať najviac 100 znakov.",
@@ -4821,7 +4821,16 @@
       "restore": "Obnoviť",
       "restoreName": "Obnoviť výrobcu {{name}}",
       "archived": "Výrobca {{name}} je v archíve.",
-      "restored": "Výrobca {{name}} s prefixom {{code}} je opäť aktívny."
+      "restored": "Výrobca {{name}} s prefixom {{code}} je opäť aktívny.",
+      "suppliers": "Dodávatelia / B2B",
+      "supplierName": "Názov dodávateľa",
+      "portalUrl": "Odkaz na B2B (voliteľné)",
+      "individualContact": "individuálny kontakt",
+      "unlinkSupplier": "Odobrať dodávateľa {{name}}",
+      "addSupplier": "Pridať dodávateľa",
+      "duplicateSupplier": "Každého dodávateľa zadajte iba raz.",
+      "invalidPortal": "Zadajte verejnú adresu B2B portálu (http:// alebo https://). Prihlasovacie údaje, tokeny a dočasné presmerovania do adresy nepatria.",
+      "showSources": "Zdroje ({{count}})"
     },
     "help": "Nové SKU skladového tovaru tvorí dvojpísmenová predpona výrobcu a jeho presný kód výrobku. Kód dodávateľa sa eviduje samostatne. Existujúce SKU zostávajú zachované.",
     "brand": "Výrobca alebo evidenčná kategória služby",
@@ -4925,7 +4934,8 @@
       "sku_item_type_conflict": "Servisná značka vyžaduje typ karty Služba.",
       "sku_manufacturer_code_required": "Nové SKU používa kód výrobku od výrobcu. Kód dodávateľa alebo EAN slúži na vyhľadanie a prepojenie existujúcej karty.",
       "sku_manufacturer_code_unverified": "Potvrďte kód výrobcu tohto konkrétneho variantu alebo použite potvrdené mapovanie výrobného kódu vo feede.",
-      "sku_brand_archived": "Výrobca je v archíve. Pre použitie na novej karte ho obnovte v nastaveniach výrobcov."
+      "sku_brand_archived": "Výrobca je v archíve. Pre použitie na novej karte ho obnovte v nastaveniach výrobcov.",
+      "sku_brand_supplier_url_invalid": "Zadajte verejnú adresu B2B portálu (http:// alebo https://). Prihlasovacie údaje, tokeny a dočasné presmerovania do adresy nepatria."
     },
     "newCardName": "Názov pre novú kartu",
     "lookupExisting": "Vyhľadať existujúcu kartu podľa SKU",

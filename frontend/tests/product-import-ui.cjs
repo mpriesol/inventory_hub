@@ -28,7 +28,8 @@ const categories = [{ code: 'MENU', assignable: false, names: { sk: 'Menu' } }, 
 const values = id => ({ code: `PL-${id}`, supplier_code: String(id), group_name: id < 3 ? 'Rodina duší' : '', name: `Duša ${id}`, brand: 'Test', manufacturer_code: '', eans: [`0000000${id}`], images: ['https://images.example.test/item.jpg'], description_html: '<p>Feed</p>', short_description: 'Z feedu', seo_title: `Duša ${id}`, seo_description: 'SEO z feedu', seo_url: '', category_code: 'TUBES', parameters: [{ name: 'Ventil', value: 'AV' }], variant_attributes: id < 3 ? [{ name: 'Veľkosť', value: String(id) }] : [], metadata: {}, purchase_net: '5', retail_gross: '9', sale_gross: '10', vat_percent: '23', currency: 'EUR', availability: 'do 5 dní', ai_enabled: false, ai_category_profile: 'auto', target_shops: ['biketrek'], target_category_codes: {} });
 let server = { id: 'test-draft', revision: 1, status: 'draft', supplier: 'paul-lange', shop: 'biketrek', feed_key: 'products', options, categories, default_shop: 'biketrek', shops: [{code:'biketrek',name:'BIKETREK',categories},{code:'xtrek',name:'xTrek',categories:[{code:'XTOOLS',names:{sk:'Výbava xTrek'}}]}], rows: [1, 2, 3].map(id => ({ id, group_key: id < 3 ? 'family-1' : `single-${id}`, is_variant: id < 3, source_category: 'Duše dodávateľ', mapping_revision: 2, values: values(id), manual_fields: [], provenance: { category_code: 'mapping', seo_title: 'derived' }, warnings: [], errors: [], hub_product_id: null, ai_job: null })), publication: null, publication_result: null };
 let recentItems = null;
-const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: ['Topeak'] },
+const reseller = { name: 'Regional Supply', url: 'https://reseller.example.test/login' };
+const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: ['Topeak'], suppliers: [reseller] },
   { id: 2, code: 'BB', name: 'BBB Cycling', kind: 'brand', aliases: ['BBB Cycling', 'BBB'] }];
 const registryBrand = name => skuBrands.find(brand => [brand.name, ...brand.aliases].includes(name));
 const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false;
@@ -741,20 +742,44 @@ async function render(entry) {
   await change(brandForm().querySelector('textarea'), 'Hub Wheels');
   const fixtureSource = 'Fixture catalog — https://example.test/catalog\nFixture distributor — https://example.test/distributor';
   await change(brandForm().querySelector('textarea[maxlength]'), fixtureSource);
+  const supplierRows = () => [...brandForm().querySelectorAll('.sku-supplier-row')];
+  await click(button(registryText('addSupplier')));
+  await change(supplierRows()[0].querySelector('input[list]'), reseller.name);
+  assert.equal(supplierRows()[0].querySelector('input[type=url]').value, reseller.url, 'Known B2B address fills automatically');
+  await click(button(registryText('addSupplier')));
+  await change(supplierRows()[1].querySelector('input[list]'), 'Phone orders');
+  await click(button(registryText('addSupplier')));
+  await change(supplierRows()[2].querySelector('input[list]'), 'Local trader');
+  await change(supplierRows()[2].querySelector('input[type=url]'), 'https://local.example.test/login');
+  await click(button(registryText('addSupplier')));
+  await change(supplierRows()[3].querySelector('input[list]'), 'Regional Supply');
+  assert(brandForm().querySelector('[type=submit]').disabled, 'Duplicate supplier is flagged in the editor');
+  await click(supplierRows()[3].querySelector('button'));
   await saveBrand();
   assert(skuBrands.some(brand => brand.name === 'Hub Test' && brand.code === 'HT'));
   await change(document.querySelector('.sku-brand-search input'), 'fixture catalog');
   assert.deepEqual([...document.querySelectorAll('.sku-brand-table tbody code')].map(node => node.textContent), ['HT']);
   assert.equal(document.querySelector('.sku-brand-source details a').href, 'https://example.test/catalog');
+  const primaryLinks = [...document.querySelectorAll('.sku-brand-suppliers a')];
+  assert.deepEqual(primaryLinks.map(node => [node.textContent, node.href]),
+    [[reseller.name, reseller.url], ['Local trader', 'https://local.example.test/login']]);
+  assert(!primaryLinks.some(node => node.closest('details')), 'Every linked supplier is visible without expanding sources');
+  assert(document.querySelector('.sku-brand-suppliers').textContent.includes('Phone orders'));
+  await change(document.querySelector('.sku-brand-search input'), 'Local trader');
+  assert.deepEqual([...document.querySelectorAll('.sku-brand-table tbody code')].map(node => node.textContent), ['HT']);
   await click(editName('Hub Test'));
+  await change(supplierRows()[2].querySelector('input[type=url]'), 'https://user:password@local.example.test/login');
+  assert(brandForm().querySelector('[type=submit]').disabled);
+  await change(supplierRows()[2].querySelector('input[type=url]'), 'https://local.example.test/b2b?act=noredirect');
   await change(brandForm().querySelector('input[maxlength="100"]'), 'Hub Wheels Test');
   await change(brandForm().querySelector('input[pattern]'), 'HW');
   await saveBrand();
   assert.deepEqual(skuBrands.at(-1).aliases, ['Hub Wheels Test', 'Hub Wheels', 'Hub Test']);
   assert.equal(skuBrands.at(-1).code, 'HW');
   assert.equal(skuBrands.at(-1).source_ref, fixtureSource);
+  assert.deepEqual(skuBrands.at(-1).suppliers, [reseller, { name: 'Phone orders', url: '' }, { name: 'Local trader', url: 'https://local.example.test/b2b?act=noredirect' }]);
   await click(editName('Hub Wheels Test'));
-  skuBrands.at(-1).source_ref = 'Updated supplier catalog';
+  skuBrands.at(-1).suppliers = [reseller];
   await saveBrand();
   assert(brandForm().querySelector('[role=alert]').textContent.includes(i18n.t('skuPolicy.errors.sku_brand_changed')));
   await click(button(registryText('reload')));

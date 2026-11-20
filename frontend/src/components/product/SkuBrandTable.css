@@ -97,3 +97,14 @@
 .sku-brand-source details[open] summary { margin-bottom: 4px; }
 .sku-brand-filter { display: flex; gap: 8px; padding: 12px 16px 0; }
 .sku-brand-previous { display: block; color: var(--color-text-secondary); }
+.sku-brand-suppliers { margin: 0; padding: 0; list-style: none; }
+.sku-brand-suppliers li + li { margin-top: 3px; }
+.sku-brand-suppliers a { text-decoration: underline; text-underline-offset: 2px; }
+.sku-brand-suppliers small { color: var(--color-text-secondary); }
+.sku-supplier-editor legend { margin-bottom: 8px; font-weight: 600; }
+.sku-supplier-editor > button { justify-self: start; }
+.sku-supplier-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto; align-items: end; gap: 8px; }
+@media (max-width: 580px) {
+  .sku-supplier-row { grid-template-columns: 1fr; border-left: 2px solid var(--color-border-subtle); padding-left: 10px; }
+  .sku-supplier-row > button { justify-self: start; }
+}

@@ -1,5 +1,7 @@
 -- Historical identities keep their original FK and allocated SKU.
 ALTER TABLE sku_brands ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+ALTER TABLE sku_brands ADD COLUMN IF NOT EXISTS suppliers jsonb NOT NULL DEFAULT '[]'::jsonb
+    CHECK (jsonb_typeof(suppliers) = 'array');
 
 CREATE TABLE IF NOT EXISTS sku_brand_reserved_codes (
     code varchar(2) PRIMARY KEY CHECK (code ~ '^[A-Z]{2}$'),
