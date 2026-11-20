@@ -109,7 +109,7 @@ export function ProductImportPage() {
   const deliveryState = draft?.publication_state || (publicationDone ? 'completed' : draft?.publication_result?.status);
   const aiPending = rows.some(row => !linkOnly(row) && effectiveImportValues(row, changes).ai_enabled && (!aiApplied(row) || needsPreparation(row)));
   const previewExpired = !!draft?.publication && Date.now() >= Date.parse(draft.publication.expires_at);
-  const renewPreview = draft?.publication_preview_retryable === true || !!draft?.publication && !draft.publication_result && (previewExpired || isImportAvailabilityError(error));
+  const renewPreview = draft?.publication_preview_retryable === true || !!draft?.publication && !draft.publication_result && (previewExpired || error === 'preview_expired' || isImportAvailabilityError(error));
   const locked = !!busy || sourceLocked || publicationBusy || !!draft?.publication_result;
   const targetsFor = (row: ProductImportRow) => linkOnly(row) ? [] : effectiveImportValues(row, changes).target_shops ?? [draft?.shop || 'biketrek'];
   const shopName = (code: string) => code === 'biketrek' ? 'BIKETREK' : code === 'xtrek' ? 'xTrek' : code;

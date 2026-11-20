@@ -273,6 +273,21 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.sent[0][1]['products'][0]['availability'], 'na objednávku')
         self.stock.assert_not_awaited()
 
+    async def test_legacy_manual_label_requires_same_saved_draft_row_native_sku_and_frozen_text(self):
+        from inventory_hub.services import product_import
+        product_row = product()
+        self.document.pop('automatic_availability_labels')
+        self.document['staging'] = {'draft_id': 'draft', 'hash': 'saved'}
+        labels = {product_row.code: 'na objednávku'}
+        row = {'id': product_row.id, 'manual_fields': ['availability'],
+               'values': {'supplier_code': product_row.code, 'availability': 'na objednávku'}}
+        draft = SimpleNamespace(document={'rows': [row]})
+        with patch.object(product_import, 'assert_snapshot', AsyncMock(return_value=draft)):
+            await imports._assert_current_stock(AsyncMock(), self.document, [product_row], labels)
+            row['values']['supplier_code'] = 'another-sku'
+            with self.assertRaisesRegex(imports.CatalogError, 'Supplier availability changed'):
+                await imports._assert_current_stock(AsyncMock(), self.document, [product_row], labels)
+
     async def test_shortened_stock_deadline_reached_while_releasing_identity_lock_never_posts(self):
         from inventory_hub.services import product_import_source
         start = imports.now()

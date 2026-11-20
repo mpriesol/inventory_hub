@@ -69,8 +69,7 @@ def _automatic_labels(document, sources):
     labels = document.get('automatic_availability_labels')
     if labels is not None:
         return labels
-    # Old journals have no manual-ownership proof. A surviving pending leaf
-    # may still be created if its exact frozen shop payload agrees with stock.
+    # For old journals, start from the actual frozen standalone/variant text.
     labels = {}
     for item in document['preview']['items']:
         payload = item['payload']
@@ -88,11 +87,21 @@ async def _assert_current_stock(db, document, products, labels):
         return
     current = await resolve_catalog_availability(db, document['preview']['supplier'], automatic,
                                                  document['supplier_availability'])
-    if any(current[p.code]['label'] != labels[p.code] for p in automatic):
+    changed = [p for p in automatic if current[p.code]['label'] != labels[p.code]]
+    if changed and document.get('staging') and 'automatic_availability_labels' not in document:
+        # An old staged journal can still prove an operator's override against
+        # the same saved draft and matching supplier identity/leaf text.
+        from inventory_hub.services.product_import import assert_snapshot
+        draft = await assert_snapshot(db, document['staging'])
+        manual = {(row['id'], row['values']['supplier_code'], row['values']['availability'])
+                  for row in draft.document['rows'] if 'availability' in row.get('manual_fields', [])}
+        changed = [p for p in changed if (p.id, p.code, labels[p.code]) not in manual]
+    if changed:
         raise CatalogError('import_source_availability_changed',
                            'Supplier availability changed; prepare a new import preview', 409)
-    return min((decision['expires_at'] for decision in current.values()
-                if decision['label'] != document['supplier_availability']['unknown'] and decision['expires_at']),
+    return min((decision['expires_at'] for code, decision in current.items()
+                if decision['label'] == labels[code] and decision['label'] != document['supplier_availability']['unknown']
+                and decision['expires_at']),
                default=None)
 
 
@@ -966,14 +975,14 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, stag
             raise CatalogError("preview_invalid", "Resolve the preview errors first", 422)
         if document["target"] != _target(shop_config(shop)):
             raise CatalogError("shop_target_changed", "The shop connection changed; create a new preview", 409)
-        if not (result and any(item["status"] == "uncertain" for item in result["items"])):
+        reconciling = result and any(item["status"] == "uncertain" for item in result["items"])
+        only_existing = preview["items"] and all(item["status"] == "exists" for item in preview["items"])
+        if not reconciling and not only_existing:
             assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
             from inventory_hub.services.product_import_source import assert_availability_fresh
             assert_availability_fresh(document)
-        # Expired previews may only reconcile previously sent items; they never create more products.
-        expired = now() > datetime.fromisoformat(preview["expires_at"])
-        if expired and not (result and any(item["status"] == "uncertain" for item in result["items"])):
-            raise CatalogError("preview_expired", "Create a fresh import preview", 409)
+            if now() >= datetime.fromisoformat(preview["expires_at"]):
+                raise CatalogError("preview_expired", "Create a fresh import preview", 409)
         if result is None:
             result = {"preview_id": preview_id, "shop": shop, "options": preview["options"],
                       "prices_with_vat": document["prices_with_vat"], "status": "queued", "items": preview["items"], "errors": [], "updated_at": now().isoformat()}
