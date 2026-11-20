@@ -25,7 +25,7 @@ class MigrationRunnerTests(unittest.TestCase):
             "supplier_availability_delivery_once", "order_webhooks", "stock_sync_dirty", "atomer_progress", "atomer_review",
             "shared_stock_sales", "product_consolidation", "atomer_catalog_control", "atomer_catalog_job_control", "atomer_catalog_handoff",
             "invoice_processing", "receiving_operation", "attention", "mixed_receiving", "atomer_availability",
-            "receiving_manual", "setting_catalogs", "supplier_availability_policy",
+            "receiving_manual", "setting_catalogs", "supplier_availability_policy", "sku_brand_management",
         )
         calls = []
 

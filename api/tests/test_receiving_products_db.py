@@ -78,7 +78,7 @@ class ReceivingProductsDatabaseTests(unittest.IsolatedAsyncioTestCase):
             raw = await connection.get_raw_connection()
             root = Path(__file__).resolve().parents[2] / 'infra/db-init'
             for name in ('004_shop_product_content.sql', '005_ai_content.sql', '012_product_editor.sql',
-                         '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql', '029_sku_policy.sql'):
+                         '021_product_feed_mapping.sql', '022_product_import_drafts.sql', '023_ai_content_settings.sql', '029_sku_policy.sql', '059_sku_brand_management.sql'):
                 await raw.driver_connection.execute((root / name).read_text())
         path = config_io.shop_path('biketrek')
         path.parent.mkdir(parents=True, exist_ok=True)

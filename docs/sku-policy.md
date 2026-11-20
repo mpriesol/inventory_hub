@@ -52,11 +52,17 @@ výrobok a nestará sa o jeho jedinečnosť. Dodávateľský kód sa nezmení a 
 
 ## Ručné overenie a existujúce produkty
 
-**Nastavenia → Výrobcovia a prefixy SKU** zobrazujú aktuálny register s
-vyhľadávaním podľa názvu, prefixu a aliasov. V príprave produktov je rovnaká
-tabuľka dostupná cez **Nastaviť SKU**. Z nej možno vybrať existujúceho výrobcu
-a vo formulári overiť jeho prefix. Chýbajúci kód a chýbajúca registrácia
-výrobcu majú samostatné hlásenia.
+V **Nastavenia → Výrobcovia a prefixy SKU** môžete výrobcu pridať, upraviť
+alebo odobrať. Hľadať sa dá podľa výrobcu, prefixu, iného zápisu mena aj
+zdroja. Jeden výrobca má jeden aktívny prefix pre všetkých dodávateľov.
+Pri premenovaní možno zachovať pôvodné meno ako alias, aby ho Hub naďalej
+rozpoznal vo feede. Väčší počet zdrojov pre jednu značku sa zadáva po riadkoch.
+
+Zmena prefixu platí pri pridelení nových SKU. Karta, ktorá už má pridelené SKU,
+si ho ponechá. Predtým použitý prefix sa rezervuje pre pôvodnú značku. Odobratie
+používanej značky ju presunie do **Archívu**, odkiaľ ju možno obnoviť. Značku
+bez histórie či používaných zápisov možno po potvrdení odstrániť. V príprave
+produktov možno aktívneho výrobcu vybrať cez **Nastaviť SKU**.
 
 Bez potvrdeného výrobného poľa možno pri príprave novej karty skontrolovať
 výrobcu, opraviť výrobný kód a výslovne potvrdiť konkrétny variant/balenie.
@@ -97,3 +103,12 @@ Existujúce overené e-shopové mapovania môžu mať vlastné pôvodné kódy.
 Pred odoslaním sa kontroluje obsadenosť produktových aj variantových kódov
 samostatne v každom cieľovom e-shope. Pridelenie alebo uloženie karty samo
 nevytvára zásobu, e-shopový produkt ani fyzický príjem.
+
+V API registra má každý výrobca pole `suppliers`. Každá položka obsahuje `name`
+a `url` s odkazom na prihlasovaciu alebo hlavnú stránku dodávateľského B2B.
+Verejné navigačné parametre ako `?act=noredirect` alebo `?route=account/login` možno zachovať.
+Pri dodávateľovi s ručným objednávaním sa používa prázdne `url`. Pole `source_ref`
+uchováva samostatné podklady na overenie značky. Pri úprave cez
+`PUT /api/sku-policy/brands/{id}` server porovná dodávateľov z `expected.suppliers`
+s aktuálnym zoznamom. Vynechané pole `suppliers` zachová väzby pri požiadavke
+zo staršej verzie aplikácie. Prázdny zoznam všetky väzby odoberie.

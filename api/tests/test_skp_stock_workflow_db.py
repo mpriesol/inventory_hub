@@ -36,7 +36,7 @@ class SkpStockWorkflowDatabaseTests(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             root = Path(__file__).resolve().parents[2] / "infra/db-init"
             for name in ("004_shop_product_content.sql", "012_product_editor.sql", "014_supplier_availability.sql",
-                         "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql"):
+                         "016_product_publication.sql", "017_stock_adjustments.sql", "018_fifo_cost_sync.sql", "029_sku_policy.sql", "059_sku_brand_management.sql"):
                 await connection.execute((root / name).read_text())
         finally:
             await connection.close()

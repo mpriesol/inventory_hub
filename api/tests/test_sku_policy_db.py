@@ -14,12 +14,16 @@ from sqlalchemy.pool import NullPool
 
 from inventory_hub.db_models import IdentifierType, Product, ProductIdentifier, Supplier
 from inventory_hub.sku_policy_models import ProductSkuIdentity, SkuBrand
-from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, SkuIdentityInput
+from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, BrandSnapshot, BrandUpdate, SkuIdentityInput
 from inventory_hub.services import sku_policy as service
 from test_sku_policy import evidence
 
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
+
+
+def snapshot_of(row):
+    return BrandSnapshot(**{key: row[key] for key in BrandSnapshot.model_fields})
 
 
 @unittest.skipUnless(TEST_URL, "Set CATALOG_TEST_DATABASE_URL to an isolated localhost *_catalog_test DB")
@@ -34,7 +38,7 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
-            for filename in ("001_schema.sql", "029_sku_policy.sql"):
+            for filename in ("001_schema.sql", "029_sku_policy.sql", "059_sku_brand_management.sql"):
                 await connection.execute((self.sql_root / filename).read_text())
             await apply_current_core_schema(connection)
         finally:
@@ -91,6 +95,116 @@ class SkuPolicyDatabaseTests(unittest.IsolatedAsyncioTestCase):
             raw = await connection.get_raw_connection()
             await raw.driver_connection.execute((self.sql_root / "029_sku_policy.sql").read_text())
             self.assertEqual(await db.scalar(select(func.count()).select_from(SkuBrand)), 8)
+
+    async def test_manage_registry_checks_snapshot_and_preserves_changes_after_deploy(self):
+        async with self.transaction() as db:
+            rows = (await service.list_brands(db))["brands"]
+            selected = next(row for row in rows if row["code"] == "BB")
+            brand_id = selected["id"]
+            snapshot = snapshot_of(selected)
+            source = "Supplier manual\nSecond catalogue"
+            changes = dict(name="Test Brand", code="XX", aliases=["Test alias"], source_ref=source)
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_alias_taken"):
+                await service.update_brand(db, brand_id, BrandUpdate(**{**changes, "aliases": ["Shimano"]}, expected=snapshot))
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_code_taken"):
+                await service.update_brand(db, brand_id, BrandUpdate(**{**changes, "code": "SH"}, expected=snapshot))
+            saved = await service.update_brand(db, brand_id, BrandUpdate(**changes, expected=snapshot))
+            self.assertEqual(saved["source_ref"], source)
+            self.assertEqual(saved["aliases"], ["Test Brand", "Test alias"])
+            self.assertEqual(await service.registered_brand_id(db, "test alias"), brand_id)
+            self.assertIsNone(await service.registered_brand_id(db, "BBB"))
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_changed"):
+                await service.remove_brand(db, brand_id, snapshot)
+            current = snapshot_of(saved)
+            incorrect_source = current.model_copy(update={"source_ref": "A stale source"})
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_changed"):
+                await service.update_brand(db, brand_id, BrandUpdate(**changes, expected=incorrect_source))
+
+            connection = await db.connection()
+            raw = await connection.get_raw_connection()
+            migration = (self.sql_root / "029_sku_policy.sql").read_text()
+            await raw.driver_connection.execute(migration)
+            self.assertIsNone(await service.registered_brand_id(db, "BBB Cycling"))
+            self.assertFalse((await service.remove_brand(db, brand_id, current))["archived"])
+            for remaining in (await service.list_brands(db))["brands"]:
+                await service.remove_brand(db, remaining["id"], snapshot_of(remaining))
+            await raw.driver_connection.execute(migration)
+            self.assertEqual((await service.list_brands(db, include_archived=True))["brands"], [])
+
+    async def test_structured_supplier_links_round_trip_and_guard_concurrent_edits(self):
+        async with self.transaction() as db:
+            fields = {"name": "Example maker", "code": "XR", "source_ref": "Catalogue page"}
+            links = [{"name": "Sample B2B", "url": "https://b2b.example.org/account/"},
+                     {"name": "Telephone orders", "url": ""}]
+            created = await service.create_brand(db, BrandCreate(**fields, suppliers=links))
+            brand_id = created["id"]
+            stored = next(row for row in (await service.list_brands(db))["brands"] if row["id"] == brand_id)
+            self.assertEqual(stored["suppliers"], links)
+            original = snapshot_of(stored)
+            edited = await service.update_brand(db, brand_id, BrandUpdate(
+                **fields, expected=original, suppliers=[links[1]]))
+            self.assertEqual(edited["suppliers"], [links[1]])
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_changed"):
+                await service.remove_brand(db, brand_id, original)
+            # Older clients neither compare nor replace portal links.
+            older = BrandSnapshot(**original.model_dump(exclude={"suppliers"}))
+            retained = await service.update_brand(db, brand_id, BrandUpdate(**fields, expected=older))
+            self.assertEqual(retained["suppliers"], [links[1]])
+            cleared = await service.update_brand(db, brand_id, BrandUpdate(
+                **fields, expected=snapshot_of(retained), suppliers=[]))
+            self.assertEqual(cleared["suppliers"], [])
+
+    async def test_prefix_change_archive_and_restore_preserve_existing_proof_and_sku(self):
+        async with self.transaction() as db:
+            product = await self.add_product(db, sku="TP-0001410")
+            item = SkuIdentityInput(**evidence())
+            await service.record_sku_identity(db, product, item)
+            original = next(row for row in (await service.list_brands(db))["brands"] if row["name"] == item.brand)
+            brand_id = original["id"]
+            snapshot = snapshot_of(original)
+            fields = snapshot.model_dump(exclude={"archived"})
+            for changes in ({"kind": "service"}, {"name": "A new name", "aliases": []}):
+                with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_in_use"):
+                    await service.update_brand(db, brand_id, BrandUpdate(**{**fields, **changes}, expected=snapshot))
+
+            saved = await service.update_brand(db, brand_id, BrandUpdate(
+                **{**fields, "name": "A new name", "code": "XX"}, expected=snapshot))
+            self.assertEqual(saved["reserved_codes"], ["TP"])
+            self.assertEqual((await service.preview_sku(db, item))["sku"], "TP-0001410")
+            new_item = SkuIdentityInput(**evidence(source_code="NEW"))
+            self.assertEqual((await service.preview_sku(db, new_item))["sku"], "XX-NEW")
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_code_taken"):
+                await service.create_brand(db, BrandCreate(code="TP", name="Another", source_ref="Manual"))
+            self.assertTrue((await service.remove_brand(db, brand_id, snapshot_of(saved)))["archived"])
+            self.assertNotIn(brand_id, [row["id"] for row in (await service.list_brands(db))["brands"]])
+            archived = next(row for row in (await service.list_brands(db, include_archived=True))["brands"]
+                            if row["id"] == brand_id)
+            self.assertTrue(archived["archived"])
+            with self.assertRaisesRegex(service.SkuPolicyError, "sku_brand_changed"):
+                await service.restore_brand(db, brand_id, snapshot_of(saved))
+            current = await service.preview_sku(db, item)
+            self.assertEqual((current["status"], current["product_id"]), ("existing", product.id))
+            self.assertEqual((await service.preview_sku(db, new_item))["reasons"], ["sku_brand_archived"])
+            restored = await service.restore_brand(db, brand_id, snapshot_of(archived))
+            self.assertFalse(restored["archived"])
+            self.assertEqual((await service.preview_sku(db, new_item))["status"], "new")
+
+    async def test_old_prefix_finds_legacy_unproven_card_and_cannot_reassign_to_other_brand(self):
+        async with self.transaction() as db:
+            legacy = await self.add_product(db, sku="TP-123", brand=None, barcode="5901234123457")
+            brand = next(row for row in (await service.list_brands(db))["brands"] if row["code"] == "TP")
+            snapshot = snapshot_of(brand)
+            fields = snapshot.model_dump(exclude={"archived"})
+            changed = await service.update_brand(db, brand["id"], BrandUpdate(
+                **{**fields, "code": "CX"}, expected=snapshot))
+            item = SkuIdentityInput(**evidence(source_code="123"))
+            alone = await service.preview_sku(db, item)
+            self.assertEqual((alone["status"], alone["candidate_product_ids"]), ("conflict", [legacy.id]))
+            existing = await service.preview_sku(db, item, barcodes=["5901234123457"])
+            self.assertEqual((existing["status"], existing["sku"]), ("existing", "TP-123"))
+            back = await service.update_brand(db, brand["id"], BrandUpdate(**fields, expected=snapshot_of(changed)))
+            self.assertEqual(back["reserved_codes"], [])
+            await service.create_brand(db, BrandCreate(code="CX", name="Another", source_ref="Manual"))
 
     async def test_new_preview_keeps_leading_zeros_and_does_not_create_any_product(self):
         async with self.transaction() as db:

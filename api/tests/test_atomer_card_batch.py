@@ -216,7 +216,7 @@ class AtomerCardDatabaseTest(unittest.IsolatedAsyncioTestCase):
             await connection.execute(f'SET search_path TO "{self.schema}"')
             for name in ('001_schema.sql','004_shop_product_content.sql','007_order_stock.sql','011_fifo.sql',
                          '012_product_editor.sql','014_supplier_availability.sql','019_stock_tracking.sql',
-                         '029_sku_policy.sql','037_atomer_progress.sql','038_atomer_review.sql',
+                         '029_sku_policy.sql','059_sku_brand_management.sql','037_atomer_progress.sql','038_atomer_review.sql',
                          '040_atomer_catalog_campaign.sql','043_atomer_source_cards.sql'):
                 await connection.execute((root/name).read_text())
             await apply_current_core_schema(connection)

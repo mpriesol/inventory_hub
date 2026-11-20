@@ -35,7 +35,7 @@ MAX_SAMPLE_BYTES = 1000000
 MAX_JOURNAL_SAMPLES = 100
 MAX_REASON_SAMPLES = 100
 LOCK_TABLES = sorted(TABLES | {'atomer_catalog_campaigns', 'atomer_progress_runs', 'atomer_progress_items', 'atomer_review_work',
-    'suppliers', 'supplier_products', 'supplier_feeds', 'shops', 'sku_brands', 'sku_brand_aliases'})
+    'suppliers', 'supplier_products', 'supplier_feeds', 'shops', 'sku_brands', 'sku_brand_aliases', 'sku_brand_reserved_codes'})
 
 
 async def lock_inputs(db):

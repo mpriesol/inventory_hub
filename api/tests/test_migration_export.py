@@ -100,7 +100,7 @@ class ExportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         try:
             await connection.execute(f'CREATE SCHEMA "{self.schema}"')
             await connection.execute(f'SET search_path TO "{self.schema}"')
-            for name in ("001_schema.sql", "004_shop_product_content.sql", "012_product_editor.sql", "029_sku_policy.sql"):
+            for name in ("001_schema.sql", "004_shop_product_content.sql", "012_product_editor.sql", "029_sku_policy.sql", "059_sku_brand_management.sql"):
                 await connection.execute((root / name).read_text())
             await apply_current_core_schema(connection)
             await connection.execute("INSERT INTO products(sku,name) VALUES ('00042-X','Test exact identity')")

@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from inventory_hub.access import operator_access
 from inventory_hub.database import get_session
 from inventory_hub.routers.product_editor import NoStoreRoute
-from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, SkuPreviewRequest
+from inventory_hub.sku_policy_types import BrandAliasCreate, BrandCreate, BrandRemove, BrandUpdate, SkuPreviewRequest
 from inventory_hub.sku_migration_types import SkuMigrationPreviewRequest
 from inventory_hub.services import sku_policy as service
 
@@ -28,13 +28,34 @@ async def _call(operation):
 
 
 @router.get("/brands")
-async def brands(db: AsyncSession = Depends(get_session)):
-    return await _call(service.list_brands(db))
+async def brands(include_archived: bool = False, db: AsyncSession = Depends(get_session)):
+    return await _call(service.list_brands(db, include_archived=include_archived))
 
 
 @router.post("/brands")
 async def create_brand(payload: BrandCreate, request: Request, db: AsyncSession = Depends(get_session)):
     result = await _call(service.create_brand(db, payload, actor=_actor(request)))
+    await db.commit()
+    return result
+
+
+@router.put("/brands/{brand_id}")
+async def update_brand(brand_id: int, payload: BrandUpdate, request: Request, db: AsyncSession = Depends(get_session)):
+    result = await _call(service.update_brand(db, brand_id, payload, actor=_actor(request)))
+    await db.commit()
+    return result
+
+
+@router.post("/brands/{brand_id}/remove")
+async def remove_brand(brand_id: int, payload: BrandRemove, db: AsyncSession = Depends(get_session)):
+    result = await _call(service.remove_brand(db, brand_id, payload.expected))
+    await db.commit()
+    return result
+
+
+@router.post("/brands/{brand_id}/restore")
+async def restore_brand(brand_id: int, payload: BrandRemove, db: AsyncSession = Depends(get_session)):
+    result = await _call(service.restore_brand(db, brand_id, payload.expected))
     await db.commit()
     return result
 

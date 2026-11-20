@@ -48,7 +48,7 @@ Databázové testy používajú vlastnú localhost DB s názvom končiacim `_cat
 
 ## Nová prázdna databáza
 
-Repozitár obsahuje **57 SQL súborov: `001`–`057`** v [infra/db-init](../infra/db-init/). `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
+Repozitár obsahuje **59 SQL súborov `001`–`059`** v [infra/db-init](../infra/db-init/). `001_schema.sql` vytvára základné typy a tabuľky bez ochrany proti opakovanému vytvoreniu; patrí iba do prázdnej databázy. Neexistuje súbor `schema_v12_FINAL.sql` z pôvodného návodu a samotné `001`–`003` nie sú aktuálna schéma.
 
 [Referenčný Compose](../infra/docker-compose.prod.yml) pripája celý adresár do `/docker-entrypoint-initdb.d`; inicializátor PostgreSQL ho použije iba pri prázdnom dátovom volume. Pri existujúcej databáze sa tento adresár znovu nespúšťa. Nevytvárať preto nové produkčné volume ako spôsob aktualizácie a nepúšťať `001` nad existujúcimi dátami.
 
@@ -80,9 +80,9 @@ Autoritatívne poradie je v [migrate.py](inventory_hub/migrate.py), SQL balenie 
 | Časť | Aktuálny rozsah |
 | --- | --- |
 | Základ schémy | SQL `001`–`004`; upgrade runner existujúci základ predpokladá. |
-| Upgrade runner | 46 Python modulov: `005`–`038`, potom `046`–`057`. |
+| Upgrade runner | 48 modulov Pythonu od `005` po `038` a od `046` po `059`. |
 | Spoločný Atomer krok | [atomer_review_migrate.py](inventory_hub/atomer_review_migrate.py) vykonáva SQL `038`–`045` spolu v jednej transakcii. |
-| SQL v API obraze | Všetkých 53 upgrade súborov `005`–`057`. |
+| SQL v API obraze | Všetkých 55 upgrade súborov `005`–`059`. |
 
 V existujúcom release workflow sa po stiahnutí obrazov vykoná `python -m inventory_hub.migrate` v jednom dočasnom API kontajneri, pred obnovením služieb. Každý modul zachováva vlastnú transakciu a advisory lock. Nie je to jedna transakcia cez celý upgrade: pri chybe sa runner zastaví, hotové moduly zostanú potvrdené a reštart API sa nedosiahne.
 
@@ -128,3 +128,14 @@ Po použití dávkového príjmu zachovať nové dôkazy pohybov aj pri oprave k
 `058_supplier_availability_policy.sql` pridáva predvolené nastavenia chýbajúcich položiek a evidenciu zmien dostupnosti. História začína od prvého nového pozorovania po nasadení. Nastavenie viditeľnosti sa dá vrátiť na **Ponechať v ponuke** a prenos pri ďalšom úspechu obnoví vlastné zmeny na overených prepojeniach.
 
 Obe migrácie sú aditívne, zapojené za 055 a zabalené v API obraze. Samy nevytvárajú príjem ani neaktivujú autoritu. Vratná archivácia zachová pôvodné doklady a účtovnú stopu. Po použití nových dát zachovať tabuľky a aplikovať kompatibilnú opravu vpred; nenasadzovať writer bez podpory ručných príjmov.
+
+### Register výrobcov a prefixov SKU
+
+Migrácia `059_sku_brand_management.sql` dopĺňa stav archivácie výrobcu, odkazy na dodávateľské B2B portály a tabuľku rezervovaných prefixov.
+Po zmene použitého prefixu si staré karty ponechajú svoj kód a výrobca svoj pôvodný identifikátor.
+Pri opakovaní migrácie 029 sa pôvodných sedem značiek dopĺňa iba pri založení novej tabuľky.
+Po prvom použití archivácie alebo zmene použitého prefixu ponechajte údaje migrácie 059
+a pri oprave nasaďte verziu, ktorá rešpektuje archív a rezervácie.
+
+V izolovanej PostgreSQL 16.2 prešlo 20. 11. 2026 všetkých 59 SQL súborov v poradí.
+Následne dvakrát prešlo všetkých 48 modulov `inventory_hub.migrate`.

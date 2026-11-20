@@ -43,6 +43,7 @@ class SkuMigrationDatabaseTests(unittest.IsolatedAsyncioTestCase):
             for path in sorted(root.glob("*.sql")):
                 if 4 <= int(path.name[:3]) <= 29:
                     await connection.execute(path.read_text())
+            await connection.execute((root / "059_sku_brand_management.sql").read_text())
             await apply_current_core_schema(connection)
         finally:
             await connection.close()

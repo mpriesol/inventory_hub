@@ -20,6 +20,11 @@ PRESERVED = {'product_identifiers', 'product_variant_attributes', 'stock_balance
 KEEPER_ONLY = {'product_supply_sources', 'product_editor_overrides', 'product_sku_identities'}
 EDITOR_OVERRIDE_SCHEMA = {'product_id': 'bigint', 'revision': 'integer', 'data': 'jsonb',
                           'updated_at': 'timestamp with time zone'}
+SKU_BRAND_SCHEMA = {
+    'id': 'bigint', 'code': 'character varying(2)', 'name': 'character varying(100)',
+    'kind': 'character varying(16)', 'source_ref': 'text', 'created_by': 'character varying(100)',
+    'created_at': 'timestamp with time zone', 'archived': 'boolean', 'suppliers': 'jsonb',
+}
 EMPTY_EDITOR_OVERRIDE = "t.data='{}'::jsonb AND t.revision>0 AND t.updated_at IS NOT NULL"
 PREVIEWS = {'product_link_previews', 'shared_stock_sale_previews', 'supplier_card_link_previews',
             'order_stock_previews', 'product_consolidations'}
@@ -54,6 +59,19 @@ def quoted(value):
     if not IDENTIFIER.fullmatch(value):
         raise ValueError('Unsupported schema identifier')
     return '"' + value + '"'
+
+
+def sku_brand_writer_condition(fields):
+    # The sole JSON projection in migration 059 is a directory of B2B links.
+    # A future column or a new document shape has no reviewed write semantics.
+    if fields != SKU_BRAND_SCHEMA:
+        return 'true'
+    return """CASE WHEN jsonb_typeof(t.suppliers) IS DISTINCT FROM 'array' THEN true
+        ELSE EXISTS (SELECT 1 FROM jsonb_array_elements(t.suppliers) AS item(value)
+            WHERE CASE WHEN jsonb_typeof(value) <> 'object' THEN true ELSE
+                jsonb_typeof(value->'name') IS DISTINCT FROM 'string'
+                OR jsonb_typeof(value->'url') IS DISTINCT FROM 'string'
+                OR value - 'name' - 'url' <> '{}'::jsonb END) END"""
 
 
 async def _summary(db, table, condition, params):
@@ -207,9 +225,12 @@ async def inspect(db, *, ids, keeper_id, products, identifiers, mappings, target
         if summary['count']:
             blockers.append({'code': 'consolidation_order_sale_history', 'count': summary['count']})
     for table, fields in sorted(columns.items()):
-        if table in JSON_READ_ONLY or table in semantic_scope.TABLES or 'jsonb' not in fields.values():
-            continue
-        condition = _mentions_sql() + ' AND (' + _open_condition(table, fields) + ')'
+        if table == 'sku_brands':
+            condition = sku_brand_writer_condition(fields)
+        else:
+            if table in JSON_READ_ONLY or table in semantic_scope.TABLES or 'jsonb' not in fields.values():
+                continue
+            condition = _mentions_sql() + ' AND (' + _open_condition(table, fields) + ')'
         if table == 'product_consolidations':
             condition += ' AND t.id<>:request_id'
         summary = await _summary(db, table, condition, params)
