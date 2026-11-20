@@ -131,6 +131,17 @@ class ArigaParserTests(unittest.TestCase):
                 self.assertIsNone(facts[0].quantity)
                 self.assertEqual(facts[0].quantity_kind, 'boolean')
 
+    def test_snapshot_product_url_is_never_an_executable_or_credential_url(self):
+        items = adapter.product_evidence(adapter.document(page()), URL)
+        self.assertEqual(self.parse()[0][0].url, URL)
+        for unsafe in ('javascript:alert(1)', ' JaVaScRiPt:alert(1)', 'data:text/html,x',
+                       'https://user:pass@example.test/p', '//example.test/p'):
+            records = deepcopy(items)
+            for node in records:
+                node.find('url').text = unsafe
+            self.path.write_bytes(snapshot(records))
+            self.assertIsNone(adapter.parse_catalog(self.path, 'ariga', CFG)[0][0].url, unsafe)
+
     def test_duplicate_or_incomplete_snapshot_is_rejected(self):
         items = adapter.product_evidence(adapter.document(page()), URL)
         for raw in (snapshot(items + deepcopy(items)), snapshot(items).replace(b'complete="true"', b'complete="false"'),

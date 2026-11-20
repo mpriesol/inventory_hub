@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ProductImportRow } from '../../api/productImport';
 import { catalogImageUrl } from '../../api/catalog';
 import { ProductThumb } from './ProductDisplay';
+import { stockCardSafeUrl } from './stockCardHelpers';
 import { Button } from '../ui/Button.new';
 
 export function ImportProductSummary({ row }: { row: ProductImportRow }) {
@@ -21,7 +22,7 @@ export function ImportProductSummary({ row }: { row: ProductImportRow }) {
         <ProductThumb key={v.images[selected]} url={catalogImageUrl(v.images[selected])} name={v.name} size={80} />
       </button>
       <div><strong>{v.name}</strong><p>{v.brand} · {v.code}</p><p>{c('sourceCategory')}: {row.source_category || '—'}</p>
-        {row.source_url && <a href={row.source_url} target="_blank" rel="noopener noreferrer">{c('supplierProduct')}</a>}
+        {stockCardSafeUrl(row.source_url) && <a href={stockCardSafeUrl(row.source_url)!} target="_blank" rel="noopener noreferrer">{c('supplierProduct')}</a>}
       </div>
     </div>
     {large && <img className="import-product-large-image" src={catalogImageUrl(v.images[selected]) || undefined} alt={v.name} />}

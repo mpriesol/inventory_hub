@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { CatalogDetail as Detail, CatalogProduct, catalogRequest, catalogImageUrl } from '../../api/catalog';
 import { Modal } from '../ui/Modal';
 import { ProductThumb } from './ProductDisplay';
+import { stockCardSafeUrl } from './stockCardHelpers';
 import { Button } from '../ui/Button.new';
 import { CatalogStock } from './CatalogStock';
 
@@ -33,9 +34,9 @@ export function CatalogDetail({ supplier, product, shop, onClose, onToggle, sele
         <p className="catalog-muted">{p.category || t('catalog.noCategory')}</p><p>EAN: {p.eans.join(', ') || '—'}</p>
         <p>{t('catalog.supplierStock')}: <CatalogStock product={p} /></p>
         {p.supplier_stock_external_raw && <p>{t('catalog.externalAvailability')}: {p.supplier_stock_external_raw}</p>}
-        {p.url && <a href={p.url} target="_blank" rel="noreferrer">{t('catalog.supplierLink')} ↗</a>}
-        {p.listed && p.shop_url && <p><a href={p.shop_url} target="_blank" rel="noopener noreferrer">{t('catalog.openShop')} ↗</a></p>}
-        {p.listed && p.shop_admin_url && <p><a href={p.shop_admin_url} target="_blank" rel="noopener noreferrer">{t('catalog.openShopAdmin')} ↗</a></p>}
+        {stockCardSafeUrl(p.url) && <a href={stockCardSafeUrl(p.url)!} target="_blank" rel="noopener noreferrer">{t('catalog.supplierLink')} ↗</a>}
+        {p.listed && stockCardSafeUrl(p.shop_url) && <p><a href={stockCardSafeUrl(p.shop_url)!} target="_blank" rel="noopener noreferrer">{t('catalog.openShop')} ↗</a></p>}
+        {p.listed && stockCardSafeUrl(p.shop_admin_url) && <p><a href={stockCardSafeUrl(p.shop_admin_url)!} target="_blank" rel="noopener noreferrer">{t('catalog.openShopAdmin')} ↗</a></p>}
         {p.listed && p.shop_active === false && <p className="catalog-muted">{t('catalog.hiddenInShop')}</p>}
         <div className="catalog-actions"><Button onClick={() => onToggle([p.id])}>{t(selected.has(p.id) ? 'catalog.removeSelection' : 'catalog.addSelection')}</Button></div>
       </div></div>
