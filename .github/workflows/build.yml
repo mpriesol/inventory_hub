@@ -97,6 +97,9 @@ jobs:
                       max-file: "3"
                   environment:
                     SUPPLIER_CREDENTIALS_ROOT: /var/lib/inventory-hub-secrets
+                    # The server base Compose overrides the image CMD; uvicorn reads this
+                    # env var so login rate limits see the client IP forwarded by Caddy.
+                    FORWARDED_ALLOW_IPS: "*"
                   volumes:
                     - ./ai-content.env:/run/secrets/hub-ai.env:ro
                     - supplier_secrets:/var/lib/inventory-hub-secrets
