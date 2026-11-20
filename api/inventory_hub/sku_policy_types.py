@@ -77,6 +77,17 @@ def _public_portal_query(query):
     return True
 
 
+def public_source_url(value, maximum):
+    exact_text(value, maximum)
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or any(char.isspace() or char in "<>\"'\\#" for char in value)
+            or not _public_portal_query(parsed.query)):
+        raise ValueError("Use a public HTTP(S) address without credentials, private parameters or redirects")
+    HttpUrl(value)  # Also validate the browser-facing hostname and port.
+    return value
+
+
 class BrandSupplier(PolicyModel):
     name: StrictStr
     url: StrictStr = Field(default="", max_length=2048)
@@ -92,14 +103,7 @@ class BrandSupplier(PolicyModel):
     def b2b_link(cls, value):
         if not value:
             return value
-        exact_text(value, 2048)
-        parsed = urlsplit(value)
-        if (parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username is not None
-                or parsed.password is not None or any(char.isspace() or char in "<>\"'\\#" for char in value)
-                or not _public_portal_query(parsed.query)):
-            raise ValueError("Use a public HTTP(S) B2B address without credentials, private parameters or redirects")
-        HttpUrl(value)  # Also validate the browser-facing hostname and port.
-        return value
+        return public_source_url(value, 2048)
 
 
 class BrandFields(PolicyModel):

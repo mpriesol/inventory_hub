@@ -1,11 +1,11 @@
 """Documented part numbers for individual offers without a confirmed feed field."""
 import re
 
-from pydantic import BaseModel, ConfigDict, HttpUrl, StrictStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, StrictStr, ValidationError, field_validator
 
 from inventory_hub import config_io
 from inventory_hub.services.identifiers import ProductIdentifierService
-from inventory_hub.sku_policy_types import SkuIdentityInput, exact_text
+from inventory_hub.sku_policy_types import SkuIdentityInput, exact_text, public_source_url
 
 
 class ManufacturerReference(BaseModel):
@@ -36,10 +36,7 @@ class ManufacturerReference(BaseModel):
     @field_validator("source_ref")
     @classmethod
     def evidence_url(cls, value):
-        url = HttpUrl(exact_text(value, 2000))
-        if url.username or url.password:
-            raise ValueError("Use a public product reference without credentials")
-        return value
+        return public_source_url(value, 2000)
 
 
 def validate_references(feeds):

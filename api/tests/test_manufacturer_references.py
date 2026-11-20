@@ -25,6 +25,7 @@ class VerifiedOfferTests(unittest.TestCase):
     def test_incomplete_or_malformed_proof_is_never_used(self):
         for change in ({"gtin": "4006381333930"}, {"source_ref": ""}, {"source_ref": "file:///tmp/data"},
                        {"source_ref": "https://user:secret@example.org"}, {"manufacturer_code": " "},
+                       {"source_ref": "https://parts.example.com/sheet?access_token=private"},
                        {"manufacturer_code": "12;34"}, {"brand": ""}):
             reference = deepcopy(self.references)
             reference["products"]["SUP-52"].update(change)
