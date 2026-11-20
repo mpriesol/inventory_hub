@@ -45,6 +45,14 @@ pôvodného zdroja, potvrdenej hodnoty a aktuálneho riadka; úprava výrobného
 alebo značky nemôže potichu použiť staré potvrdenie. Zmena zdroja, cieľa alebo
 transformácie v editore zruší potvrdenie mapovania.
 
+Pri jednotlivom výrobku bez výrobného poľa môže správca uložiť publikovaný
+výrobný kód do konfigurácie dodávateľa. V `adapter_settings.manufacturer_references`
+je prvým kľúčom názov feedu a druhým presný dodávateľský kód. Záznam obsahuje
+`brand`, `gtin`, `manufacturer_code` a `source_ref` s odkazom na doklad ku
+konkrétnemu baleniu. Príprava overí názov značky a jediný platný čiarový kód
+balenia. Zmena dodávateľa, ponuky alebo balenia vyžaduje zodpovedajúci doklad.
+Ručný výber obsluhy má prednosť. Takýto doklad nevyžaduje obnovu feedu.
+
 Z potvrdeného výrobného kódu a registrovanej značky Hub automaticky pripraví
 SKU a uloží dôkaz identity pri vytvorení karty. Obsluha nezadáva SKU pre každý
 výrobok a nestará sa o jeho jedinečnosť. Dodávateľský kód sa nezmení a cez

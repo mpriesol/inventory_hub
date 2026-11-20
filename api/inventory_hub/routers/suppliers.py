@@ -560,6 +560,13 @@ def put_supplier_config(supplier: str, payload: Dict[str, Any] = Body(...)) -> D
         raise HTTPException(422, detail=str(error)) from None
     _validate_price_coefficients(payload)
     adapter = payload.get("adapter_settings", {})
+    if isinstance(adapter, dict) and "manufacturer_references" in adapter:
+        from inventory_hub.services.manufacturer_references import validate_references
+        try:
+            validate_references(adapter["manufacturer_references"])
+        except ValueError:
+            raise HTTPException(422, detail={"code": "manufacturer_references_invalid",
+                                             "message": "Each offer needs its exact brand, GTIN, manufacturer code and evidence URL"}) from None
     if supplier == "husky" and isinstance(adapter, dict) and "husky" in adapter:
         from inventory_hub.adapters.husky_b2b import validate_options, HuskyError
         try:

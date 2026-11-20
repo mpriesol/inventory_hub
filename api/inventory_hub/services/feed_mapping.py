@@ -198,6 +198,29 @@ def _binding_values(raw: dict, binding):
     return values
 
 
+def confirmed_manufacturer_field(raw: dict, mapping: ProductFeedMapping | None) -> dict | None:
+    """Read an explicitly approved leaf code from one frozen supplier record."""
+    if (not raw or not mapping or getattr(mapping, "shop_code", None) != "" or not isinstance(mapping.definition, dict)
+            or type(mapping.revision) is not int or mapping.revision <= 0):
+        return None
+    try:
+        definition = MappingDefinition(bindings=mapping.definition.get("bindings", []))
+        binding = next((item for item in definition.bindings if item.manufacturer_code_confirmed), None)
+        if binding is None:
+            return None
+        validate_definition(MappingDefinition(bindings=[binding]))
+        value = _one(_binding_values(raw, binding), binding.target)
+        if not isinstance(value, str):
+            return None
+        from inventory_hub.sku_policy_types import SkuIdentityInput
+        SkuIdentityInput.code_text(value)
+    except ValueError:
+        # A malformed, missing or ambiguous source is never identity evidence.
+        return None
+    return {"scope": "feed", "revision": mapping.revision, "source": binding.source,
+            "manufacturer_code_confirmed": True, "value": value}
+
+
 def apply_definition(product: CatalogProduct | None, raw: dict, definition: MappingDefinition, supplier: str,
                      feed_key: str, cfg: dict, *, revision: int = 0, shop: str = "") -> CatalogProduct:
     """Overlay only configured fields. Native parsing remains authoritative elsewhere."""
@@ -353,6 +376,30 @@ async def mapping_row(db, supplier: str, feed_key: str, shop: str = ""):
     return await db.scalar(select(ProductFeedMapping).join(Supplier, Supplier.id == ProductFeedMapping.supplier_id)
                            .where(Supplier.code == supplier, ProductFeedMapping.feed_key == feed_key,
                                   ProductFeedMapping.shop_code == shop))
+
+
+async def confirmed_mapping_for_snapshot(db, supplier: str, feed_key: str, revision: int) -> ProductFeedMapping | None:
+    """Reuse current approval only for the same unit of source data."""
+    if type(revision) is not int or revision < 0:
+        return None
+    mapping = await mapping_row(db, supplier, feed_key)
+    if mapping is None or revision > mapping.revision:
+        return None
+    if revision == mapping.revision:
+        return mapping
+    original = {}
+    if revision:
+        original = await db.scalar(select(ProductFeedMappingRevision.definition).where(
+            ProductFeedMappingRevision.mapping_id == mapping.id, ProductFeedMappingRevision.revision == revision))
+        if original is None:
+            return None
+    selectors = {"format", "record_path", "csv_encoding", "csv_delimiter"}
+    try:
+        before = MappingDefinition.model_validate(original).model_dump(include=selectors)
+        after = MappingDefinition.model_validate(mapping.definition).model_dump(include=selectors)
+    except ValueError:
+        return None
+    return mapping if before == after else None
 
 
 async def get_mapping(db, supplier: str, feed_key: str = "products", shop: str = ""):

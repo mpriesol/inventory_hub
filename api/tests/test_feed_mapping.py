@@ -7,6 +7,7 @@ from pathlib import Path
 from catalog_fixtures import northfinder_product, northfinder_variant, product, xml_item
 from inventory_hub.adapters.paul_lange_catalog import parse_catalog
 from inventory_hub.adapters.northfinder_catalog import parse_catalog as parse_northfinder
+from inventory_hub.feed_mapping_models import ProductFeedMapping
 from inventory_hub.feed_mapping_types import MappingDefinition
 from inventory_hub.services import feed_mapping as mapping
 from inventory_hub.services.feed_mapping_source import inspect_records, read_records, values_at
@@ -141,6 +142,24 @@ class FeedMappingTests(unittest.TestCase):
                         {'transforms': [{'op': 'prefix', 'value': 'M-'}]}, {'manufacturer_code_confirmed': 'true'}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 MappingDefinition.model_validate({'bindings': [{**definition.bindings[1].model_dump(), **changes}]})
+
+    def test_frozen_record_reuses_only_approved_shared_leaf_binding(self):
+        binding = {"target": "manufacturer_code", "source": "unit/part",
+                   "manufacturer_code_confirmed": True, "transforms": [{"op": "trim"}]}
+        saved = ProductFeedMapping(shop_code="", revision=5, definition={"bindings": [binding]})
+        raw = {"CODE": "supplier-only", "unit": {"part": " 0005-X "}}
+        proof = mapping.confirmed_manufacturer_field(raw, saved)
+        self.assertEqual(proof, {"scope": "feed", "revision": 5, "source": "unit/part",
+                                 "manufacturer_code_confirmed": True, "value": "0005-X"})
+        for unit in ({}, {"part": 5}, {"part": ["0005-X", "0005-Y"]}, {"part": "bad;code"}):
+            with self.subTest(unit=unit):
+                self.assertIsNone(mapping.confirmed_manufacturer_field({**raw, "unit": unit}, saved))
+        for changed in ({"manufacturer_code_confirmed": False}, {"constant": "0005-X"}, {"default": "0005-X"}):
+            saved.definition = {"bindings": [{**binding, **changed}]}
+            self.assertIsNone(mapping.confirmed_manufacturer_field(raw, saved))
+        saved.definition = {"bindings": [binding]}
+        saved.shop_code = "biketrek"
+        self.assertIsNone(mapping.confirmed_manufacturer_field(raw, saved))
 
     def test_shop_mapping_categories_are_shop_specific_and_preserve_raw_source(self):
         definition = MappingDefinition.model_validate({"category_rules": [{"source": "Tubes", "target_code": "leaf-10"}],

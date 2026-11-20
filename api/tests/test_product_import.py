@@ -75,6 +75,24 @@ class ProductImportUnitTests(unittest.TestCase):
         self.assertTrue(item['values']['sku_identity']['leaf_confirmed'])
         self.assertEqual(item['values']['code'], 'TT-00042-M')
 
+    def test_automatic_leaf_is_invalidated_by_reassigned_variant_or_conflicting_proof(self):
+        references = {'products': {'A-001': {'brand': 'TEST', 'gtin': '4006381333931',
+            'manufacturer_code': '0005-G', 'source_ref': 'https://parts.example.com/test/0005-G'}}}
+        item = row(eans=['4006381333931'])
+        item['source']['eans'] = ['4006381333931']
+        for field, value in [('brand', 'OTHER'), ('eans', ['5901234123457']), ('supplier_code', 'A-002'),
+                             ('variant_attributes', [{'name': 'size', 'value': 'M'}]), ('manufacturer_code', 'OTHER')]:
+            edited = deepcopy(item)
+            edited['values'][field] = value
+            with self.subTest(field=field):
+                self.assertEqual(asyncio.run(service.automatic_manufacturer_identity(
+                    None, edited, 'paul-lange', {}, references)), (None, None))
+        item['values']['manufacturer_code'] = item['source']['manufacturer_code'] = 'DIFFERENT'
+        item['source']['mapping_provenance'] = {'fields': {'manufacturer_code': {'scope': 'feed', 'revision': 1,
+            'source': 'manufacturerArticle', 'manufacturer_code_confirmed': True, 'value': 'DIFFERENT'}}}
+        self.assertEqual(asyncio.run(service.automatic_manufacturer_identity(
+            None, item, 'paul-lange', {}, references)), (None, None))
+
     def test_legacy_code_candidate_does_not_become_independent_sku_evidence(self):
         from inventory_hub.services import sku_policy
         item = row(sku_identity={'brand': 'TEST', 'source_code': 'LEAF-42',

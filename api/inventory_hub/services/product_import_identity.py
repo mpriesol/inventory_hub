@@ -155,10 +155,12 @@ def required(row):
     return row['status'] == 'conflict' or (row['status'] == 'review' and row['decision'] is None)
 
 
-async def summary(db, draft):
-    if all(row.get('hub_product_id') for row in draft.document['rows']):
+async def summary(db, draft, *, document=None):
+    if document is None:
+        document = draft.document
+    if all(row.get('hub_product_id') for row in document['rows']):
         return {'identity_review_required': False, 'identity_review_count': 0}
-    review, _ = await build(db, draft, summary_only=True)
+    review, _ = await build(db, draft, summary_only=True, document=document)
     count = sum(required(row) for row in review['rows'])
     return {'identity_review_required': bool(count), 'identity_review_count': count}
 
@@ -167,18 +169,18 @@ async def review(db, draft, request):
     from inventory_hub.services import product_import as imports
     imports.expect(draft, request.expected_revision)
     imports.assert_editable(draft)
-    return (await build(db, draft))[0]
+    return (await build(db, draft, document=await imports.rechecked_document(db, draft)))[0]
 
 
 async def decisions(db, draft, request):
     from inventory_hub.services import product_import as imports
     imports.expect(draft, request.expected_revision)
     imports.assert_editable(draft)
-    review, state = await build(db, draft)
+    document = deepcopy(await imports.rechecked_document(db, draft))
+    review, state = await build(db, draft, document=document)
     if review['review_hash'] != request.review_hash:
         raise CatalogError('import_identity_review_changed', 'Product identity changed; review the current candidates', 409)
     by_id = {row['row_id']: row for row in review['rows']}
-    document = deepcopy(draft.document)
     raw_rows = {row['id']: row for row in document['rows']}
     for choice in request.decisions:
         row = by_id.get(choice.row_id)
