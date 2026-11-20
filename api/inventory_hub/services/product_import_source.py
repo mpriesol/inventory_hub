@@ -202,44 +202,12 @@ def _lease():
     return (datetime.now(timezone.utc) + timedelta(seconds=LEASE_SECONDS)).isoformat()
 
 
-def prepare_availability(rows, policy, freshness_seconds=None):
-    """Expired automatic lead times become unknown in this preview only."""
-    deadlines = []
-    for row in rows:
-        if 'availability' in row.get('manual_fields', []):
-            continue
-        evidence = CatalogProduct.model_validate(row['source'])
-        expiry = evidence.supplier_observation_expires_at
-        if evidence.sloger_observation is None:
-            continue
-        if expiry and freshness_seconds is not None:
-            expiry = min(expiry, evidence.sloger_observation.observed_at + timedelta(seconds=freshness_seconds))
-        if expiry is None or expiry <= datetime.now(timezone.utc):
-            row['values']['availability'] = policy['unknown']
-        elif evidence.supplier_available is True and row['values']['availability'] != policy['unknown']:
-            deadlines.append(expiry)
-    return min(deadlines).isoformat() if deadlines else None
-
-
 async def _freshness_seconds(db):
     from sqlalchemy import select
     from inventory_hub.db_models import Supplier
     from inventory_hub.supplier_availability_models import SupplierAvailabilitySettings
     return await db.scalar(select(SupplierAvailabilitySettings.freshness_seconds)
         .join(Supplier, Supplier.id == SupplierAvailabilitySettings.supplier_id).where(Supplier.code == 'sloger'))
-
-
-async def availability_snapshot(db, rows, policy):
-    if not any(row['source'].get('sloger_observation') for row in rows):
-        return {}
-    deadline = prepare_availability(rows, policy, await _freshness_seconds(db) or 0)
-    if not deadline:
-        return {}
-    observed = [CatalogProduct.model_validate(row['source']).sloger_observation.observed_at
-        for row in rows if row['source'].get('sloger_observation') and row['source'].get('supplier_available') is True
-        and 'availability' not in row.get('manual_fields', []) and row['values']['availability'] != policy['unknown']]
-    return {'supplier_availability_expires_at': deadline,
-            'supplier_availability_observed_at': min(observed).isoformat()}
 
 
 def assert_availability_fresh(staging):
@@ -249,6 +217,7 @@ def assert_availability_fresh(staging):
 
 
 async def assert_current_availability(db, staging):
+    """Honor the original Sloger B2B evidence on pre-existing staged journals."""
     assert_availability_fresh(staging)
     observed = (staging or {}).get('supplier_availability_observed_at')
     if observed:

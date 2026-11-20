@@ -16,7 +16,7 @@ for (const ext of ['.ts', '.tsx']) require.extensions[ext] = (module, filename) 
   module._compile(ts.transpileModule(source, { compilerOptions: { jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true } }).outputText, filename);
 };
 require.extensions['.css'] = () => {};
-require('../src/i18n/index.ts');
+const i18n = require('../src/i18n/index.ts').default;
 const React = require('react');
 const { act } = React;
 const { createRoot } = require('react-dom/client');
@@ -275,6 +275,22 @@ async function settle() { await act(async () => { await new Promise(resolve => s
   assert.equal(calls.some(c => c.path.endsWith('/import')), false, 'Excluding existing variants only rebuilds the preview');
   await click(button('Zavrieť')); await settle();
 
+  const stoppedCode = 'import_source_availability_changed';
+  const stoppedItem = { code: 'PL-1', name: 'Product', product_ids: [1], variants_count: 0, status: 'failed', errors: [stoppedCode], warnings: [], payload: {} };
+  const stoppedPreview = { preview_id: 'stopped-preview', options: { language: 'sk' }, errors: [], items: [], expires_at: new Date(Date.now() + 60000).toISOString(), sale_price_overrides: { 1: '130' } };
+  let renewed = null;
+  async function renderStopped(attempted) {
+    const result = { ...stoppedPreview, status: 'completed', errors: [stoppedCode], items: [{ ...stoppedItem, product_write_attempted: attempted }] };
+    await act(async () => root.render(React.createElement(CatalogImport, { preview: stoppedPreview, result, shopName: 'BIKETREK', sending: false, error: '', onRenewPreview: overrides => { renewed = overrides; } })));
+  }
+  await renderStopped(false);
+  assert(document.body.textContent.includes(i18n.t('catalog.codes.import_source_availability_changed')));
+  await click(button(i18n.t('productImport.freshPreview')));
+  assert.deepEqual(renewed, { 1: '130' }, 'Fresh direct previews preserve confirmed sale price overrides');
+  await renderStopped(true);
+  assert(!button(i18n.t('productImport.freshPreview')), 'An attempted write keeps the original recovery route');
+  await renderStopped(undefined);
+  assert(!button(i18n.t('productImport.freshPreview')), 'A legacy result without proof cannot replace a publication');
   const fresh = new Date(Date.now() + 3600000).toISOString();
   const expired = new Date(Date.now() - 3600000).toISOString();
   const huskyProduct = { ...products[0], supplier: 'husky', listed: false,

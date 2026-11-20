@@ -129,6 +129,12 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         patch.object(imports, "get_session_context", dummy_session).start()
         patch.object(imports, "selected_products", AsyncMock(return_value=[product()])).start()
         self.supplier_config = patch.object(imports, "supplier_config", return_value={}).start()
+        # These execution fixtures supply an independent source decision for
+        # each selected SKU. The database resolver has its own feed fixtures.
+        def stock(db, supplier, products, policy):
+            return {p.code: {'label': policy['orderable'] if p.supplier_stock else policy['unknown'],
+                             'orderable': True, 'expires_at': None} for p in products}
+        self.stock = patch.object(imports, 'resolve_catalog_availability', AsyncMock(side_effect=stock)).start()
         patch.object(imports, "local_identities", AsyncMock(side_effect=lambda db, rows: ({p.id: p.id + 100 for p in rows}, set()))).start()
         patch.object(imports, 'canonical_products', AsyncMock(side_effect=lambda db, rows: rows)).start()
         # Publication fixtures represent cards already saved in Hub. Separate
@@ -144,6 +150,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         item = imports.build_item([p], ShopImportOptions(), {}, True)
         self.document = {"target": imports._target(imports.shop_config("test-shop")), "prices_with_vat": True,
             "supplier_availability": imports.availability_policy("paul-lange"),
+            "automatic_availability_labels": {p.code: "overíme"},
             "sources": [p.model_dump(mode="json")], "result": None,
             "preview": {"preview_id": self.id, "shop": "test-shop", "supplier": "paul-lange", "errors": [],
                 "expires_at": (imports.now() + timedelta(hours=1)).isoformat(), "options": ShopImportOptions().model_dump(),
@@ -218,6 +225,136 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result['items'][0]['product_write_attempted'], False)
         self.assertEqual(self.client.sent, [])
         self.register.assert_not_awaited()
+
+    async def test_direct_preview_freezes_native_sku_label_and_deadline_and_rechecks_feed_at_send(self):
+        p = product()
+        deadline = imports.now() + timedelta(minutes=3)
+        decision = {p.code: {'label': 'do 5 dní', 'orderable': True, 'expires_at': deadline}}
+        self.stock.side_effect = [decision, decision, {p.code: {**decision[p.code], 'label': 'overíme'}}]
+        db = AsyncMock()
+        db.scalar.return_value = 1
+        preview = await imports.create_preview(db, 'test-shop', ShopImportPreviewRequest(supplier=p.supplier, product_ids=[p.id]))
+        self.assertEqual(preview.items[0].payload['availability'], 'do 5 dní')
+        self.assertEqual(preview.expires_at, deadline)
+        saved = imports._load(imports._path('test-shop', preview.preview_id))
+        self.assertEqual(saved['automatic_availability_labels'], {p.code: 'do 5 dní'})
+        self.assertEqual(saved['supplier_availability_expires_at'], deadline.isoformat())
+        imports.queue_import('test-shop', preview.preview_id)
+        await imports.execute_import('test-shop', preview.preview_id)
+        item = imports.import_result('test-shop', preview.preview_id)['items'][0]
+        self.assertEqual(item['errors'], ['import_source_availability_changed'])
+        self.assertIs(item['product_write_attempted'], False)
+        self.assertEqual(self.client.sent, [])
+
+    async def test_new_positive_feed_after_queue_or_legacy_unproved_label_requires_fresh_preview(self):
+        self.document['preview']['create_validation_field'] = True
+        self.client.has_field = False
+        self.stock.side_effect = None
+        self.stock.return_value = {product().code: {'label': 'do 5 dní', 'orderable': True, 'expires_at': None}}
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                if legacy:
+                    self.id = 'b' * 32
+                    self.path = imports._path('test-shop', self.id)
+                    self.document['preview']['preview_id'] = self.id
+                    self.document.pop('automatic_availability_labels')
+                imports._write(self.path, self.document)
+                result = await self.run_import()
+                self.assertEqual(result['errors'], ['import_source_availability_changed'])
+                self.assertIs(result['items'][0]['product_write_attempted'], False)
+                self.assertEqual(self.client.sent, [])
+
+    async def test_manual_label_has_no_stock_deadline_or_revalidation(self):
+        self.document['automatic_availability_labels'] = {}
+        self.document['preview']['items'][0]['payload']['availability'] = 'na objednávku'
+        imports._write(self.path, self.document)
+        result = await self.run_import()
+        self.assertEqual(result['items'][0]['status'], 'created')
+        self.assertEqual(self.client.sent[0][1]['products'][0]['availability'], 'na objednávku')
+        self.stock.assert_not_awaited()
+
+    async def test_legacy_manual_label_requires_same_saved_draft_row_native_sku_and_frozen_text(self):
+        from inventory_hub.services import product_import
+        product_row = product()
+        self.document.pop('automatic_availability_labels')
+        self.document['staging'] = {'draft_id': 'draft', 'hash': 'saved'}
+        labels = {product_row.code: 'na objednávku'}
+        row = {'id': product_row.id, 'manual_fields': ['availability'],
+               'values': {'supplier_code': product_row.code, 'availability': 'na objednávku'}}
+        draft = SimpleNamespace(document={'rows': [row]})
+        with patch.object(product_import, 'assert_snapshot', AsyncMock(return_value=draft)):
+            await imports._assert_current_stock(AsyncMock(), self.document, [product_row], labels)
+            row['values']['supplier_code'] = 'another-sku'
+            with self.assertRaisesRegex(imports.CatalogError, 'Supplier availability changed'):
+                await imports._assert_current_stock(AsyncMock(), self.document, [product_row], labels)
+
+    async def test_shortened_stock_deadline_reached_while_releasing_identity_lock_never_posts(self):
+        from inventory_hub.services import product_import_source
+        start = imports.now()
+        deadline = start + timedelta(seconds=1)
+        p = product()
+        self.document['automatic_availability_labels'] = {p.code: 'do 5 dní'}
+        self.document['preview']['items'][0]['payload']['availability'] = 'do 5 dní'
+        self.document['supplier_availability_expires_at'] = (start + timedelta(hours=2)).isoformat()
+        self.stock.side_effect = None
+        self.stock.return_value = {p.code: {'label': 'do 5 dní', 'orderable': True, 'expires_at': deadline}}
+        imports._write(self.path, self.document)
+        class Clock(datetime):
+            instant = start
+            @classmethod
+            def now(cls, tz=None):
+                return cls.instant
+        checkpoint = imports._item_checkpoint
+        def checkpoint_and_advance(path, result, item):
+            checkpoint(path, result, item)
+            if item['status'] == 'uncertain':
+                Clock.instant = deadline
+        with patch.object(product_import_source, 'datetime', Clock), \
+                patch.object(imports, '_item_checkpoint', side_effect=checkpoint_and_advance):
+            result = await self.run_import()
+        self.assertEqual(result['items'][0]['errors'], ['import_source_availability_expired'])
+        self.assertIs(result['items'][0]['product_write_attempted'], False)
+        self.assertEqual(self.client.sent, [])
+
+    async def test_legacy_mixed_batch_reconciles_uncertain_sibling_and_sends_only_matching_variant(self):
+        await self._legacy_mixed_batch(changed=False)
+
+    async def test_failed_preflight_only_reconciles_uncertain_without_creating_valid_siblings(self):
+        await self._legacy_mixed_batch(changed=True)
+
+    async def _legacy_mixed_batch(self, *, changed):
+        products = [product(1), product(2, group_code='G1', variant_relationship='explicit',
+            variant_attributes=[CatalogParameter(name='Size', value='M')]), product(3)]
+        items = []
+        for p in products:
+            item = imports.build_item([p], ShopImportOptions(), {}, True)
+            imports.apply_availability(item.payload, [p], self.document['supplier_availability'])
+            items.append(item.model_dump(mode='json'))
+        if changed:
+            items[1]['payload']['variants'][0]['availability'] = 'do 5 dní'
+        self.document.pop('automatic_availability_labels')
+        self.document['sources'] = [p.model_dump(mode='json') for p in products]
+        self.document['preview']['items'] = items
+        imports._write(self.path, self.document)
+        imports.queue_import('test-shop', self.id)
+        saved = imports._load_job(self.path)
+        saved['result']['items'][0].update(status='uncertain', product_write_attempted=True)
+        saved['result']['status'] = 'failed'
+        imports._save_job(self.path, saved)
+        self.client.post('products', {'products': [items[0]['payload']]})
+        imports.selected_products.side_effect = lambda db, supplier, feed_key, ids: [p for p in products if p.id in ids]
+        await imports.assert_queue_availability(AsyncMock(), 'test-shop', self.id, retry_failed=True)
+        imports.queue_import('test-shop', self.id, retry_failed=True)
+        await imports.execute_import('test-shop', self.id)
+        result = imports.import_result('test-shop', self.id)['items']
+        self.assertEqual(result[0]['status'], 'created')
+        if changed:
+            self.assertEqual([i['errors'] for i in result[1:]], [['import_source_availability_changed']] * 2)
+            self.assertTrue(all(i['product_write_attempted'] is False for i in result[1:]))
+            self.assertEqual(len(self.client.sent), 1)
+        else:
+            self.assertEqual([i['status'] for i in result], ['created'] * 3)
+            self.assertEqual([s[1]['products'][0]['code'] for s in self.client.sent], [i['code'] for i in items])
 
     async def test_supplier_expiry_after_queue_prevents_all_remote_writes(self):
         self.document['staging'] = {'draft_id': 'draft', 'hash': 'hash',
@@ -461,6 +598,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_variant_created_elsewhere_after_preview_blocks_group_without_writing(self):
         products = [product(i, group_code="G1", variant_relationship="explicit", variant_attributes=[CatalogParameter(name="Size", value=size)]) for i, size in [(1, "M"), (2, "L")]]
         self.document["sources"] = [p.model_dump(mode="json") for p in products]
+        self.document['automatic_availability_labels'] = {p.code: 'overíme' for p in products}
         self.document["preview"]["items"] = [imports.build_item(products, ShopImportOptions(), {}, True).model_dump(mode="json")]
         imports._write(self.path, self.document)
         imports.selected_products.return_value = products
@@ -691,6 +829,7 @@ class ImportExecutionTests(unittest.IsolatedAsyncioTestCase):
         v = product(2, group_code="G1", variant_relationship="explicit", variant_attributes=[CatalogParameter(name="Size", value="L")])
         item = imports.build_item([p, v], ShopImportOptions(), {}, True)
         self.document["sources"] = [source.model_dump(mode="json") for source in (p, v)]
+        self.document['automatic_availability_labels'] = {source.code: 'overíme' for source in (p, v)}
         self.document["preview"]["items"] = [item.model_dump(mode="json")]
         imports._write(self.path, self.document)
         self.client.omit_variant = True

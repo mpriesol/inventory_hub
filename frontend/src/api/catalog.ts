@@ -52,7 +52,7 @@ export interface ImportItem {
   code: string; name: string; product_ids: number[]; variants_count: number;
   status: 'ready' | 'exists' | 'invalid' | 'created' | 'failed' | 'uncertain';
   warnings: string[]; errors: string[]; payload: Record<string, any>;
-  existing_product_ids?: number[]; parent_exists?: boolean;
+  existing_product_ids?: number[]; parent_exists?: boolean; product_write_attempted?: boolean | null;
 }
 export interface ImportPreview {
   preview_id: string; shop: string; supplier: string; created_at: string; expires_at: string;
@@ -82,6 +82,19 @@ export function catalogImageUrl(url?: string | null): string | undefined {
   if (!url) return undefined;
   const image = /^http:\/\/xml\.paul-lange-oslany\.sk:8081\/(ito5-[A-Za-z0-9]{1,60}\.jpg)$/.exec(url);
   return image ? `/api/suppliers/paul-lange/catalog/images/${image[1]}` : url;
+}
+
+export function isImportAvailabilityError(code: string): boolean {
+  return code === 'import_source_availability_changed' || code === 'import_source_availability_expired' || code === 'supplier_availability_changed';
+}
+
+export function canRenewImportPreview(preview: ImportPreview | null | undefined, result: ImportResult | null | undefined, error: string): boolean {
+  if (!preview) return false;
+  if (!result) return Date.now() >= Date.parse(preview.expires_at) || isImportAvailabilityError(error);
+  if (result.preview_id !== preview.preview_id || !['failed', 'completed'].includes(result.status) || !result.items.length) return false;
+  const errors = [...result.errors, ...result.items.flatMap(item => item.errors)];
+  return errors.length > 0 && errors.every(isImportAvailabilityError)
+    && result.items.every(item => item.product_write_attempted === false && ['ready', 'failed', 'exists'].includes(item.status));
 }
 
 export class CatalogApiError extends Error {

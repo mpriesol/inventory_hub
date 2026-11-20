@@ -7,7 +7,7 @@ import { Button } from '../components/ui/Button.new';
 import { CatalogTable } from '../components/product/CatalogTable';
 import { CatalogDetail } from '../components/product/CatalogDetail';
 import { CatalogImport } from '../components/product/CatalogImport';
-import { CatalogDownload, CatalogPage, CatalogProduct, CatalogStatus, ImportOptions, TargetOptions, ImportPreview, ImportResult, catalogRequest, catalogQuery } from '../api/catalog';
+import { CatalogDownload, CatalogPage, CatalogProduct, CatalogStatus, ImportOptions, TargetOptions, ImportPreview, ImportResult, catalogRequest, catalogQuery, isImportAvailabilityError } from '../api/catalog';
 import './SupplierCatalogPage.css';
 
 const defaults: ImportOptions = { language: 'sk', currency: 'EUR', pricelist: 'Predvolené', category_code: null, pricing: 'configured', include_images: true, include_description: true, include_parameters: true };
@@ -189,6 +189,7 @@ export function SupplierCatalogPage() {
       remember(`catalog.import.${shop}`, id); setResult(next); setJobId(id);
     } catch (e: any) {
       setImportError(e.code || 'request_failed');
+      if (!retry && (isImportAvailabilityError(e.code) || e.code === 'preview_expired')) return;
       // The server may have accepted the request before a connection failure.
       remember(`catalog.import.${shop}`, id); setJobId(id);
     } finally { setSending(false); }
@@ -242,6 +243,6 @@ export function SupplierCatalogPage() {
     </>}
     {result && <div className="catalog-job-bar"><span>{t(activeImport ? 'catalog.importRunning' : 'catalog.lastImport')}</span><Button variant="secondary" size="sm" onClick={() => setDialog(true)}>{t('catalog.showResult')}</Button></div>}
     {detail && <CatalogDetail key={detail.id} supplier={supplier} product={detail} shop={shop} selected={selected} onToggle={toggle} onClose={() => setDetail(null)} />}
-    {dialog && (preview || result) && <CatalogImport key={result?.preview_id || preview?.preview_id} preview={preview} result={result} shopName={shopInfo?.name || shop} sending={sending || preparing} error={importError} onReprice={prepare} onExclude={(ids, overrides) => prepare(overrides, [...selected].filter(id => !ids.includes(id)))} onConfirm={() => confirm()} onRetry={() => confirm(true)} onClose={() => setDialog(false)} />}
+    {dialog && (preview || result) && <CatalogImport key={result?.preview_id || preview?.preview_id} preview={preview} result={result} shopName={shopInfo?.name || shop} sending={sending || preparing} error={importError} onReprice={prepare} onRenewPreview={prepare} onExclude={(ids, overrides) => prepare(overrides, [...selected].filter(id => !ids.includes(id)))} onConfirm={() => confirm()} onRetry={() => confirm(true)} onClose={() => setDialog(false)} />}
   </div>;
 }

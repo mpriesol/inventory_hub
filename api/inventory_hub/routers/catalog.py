@@ -102,9 +102,13 @@ async def preview(shop: str, request: ShopImportPreviewRequest, db: DB):
 
 @router.post("/shops/{shop}/import", response_model=ShopImportResult, status_code=202,
              summary="Confirm a preview; hidden products with validation_required, no stock writes")
-def start_import(shop: str, request: ShopImportRequest, background: BackgroundTasks):
-    if catalog_import._load(catalog_import._path(shop, request.preview_id)).get("content_approval"):
+async def start_import(shop: str, request: ShopImportRequest, background: BackgroundTasks, db: DB):
+    document = catalog_import._load(catalog_import._path(shop, request.preview_id))
+    if document.get("content_approval"):
         raise catalog.CatalogError("ai_import_via_workflow", "Confirm AI content imports through the protected AI job action", 403)
+    if document.get('staging'):
+        raise catalog.CatalogError('import_staging_confirmation_required', 'Confirm this publication from its saved import draft', 409)
+    await catalog_import.assert_queue_availability(db, shop, request.preview_id, retry_failed=request.retry_failed)
     result, queued = catalog_import.queue_import(shop, request.preview_id, request.retry_failed)
     if queued:
         background.add_task(catalog_import.execute_import, shop, request.preview_id)

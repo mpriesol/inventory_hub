@@ -177,7 +177,8 @@ def _staging(proof, staging, sources, supplier, drafts, *, settled):
 
 def parse(proof, job, namespace, identifier, drafts):
     s.obj(job, {'preview', 'sources', 'target', 'prices_with_vat', 'supplier_availability', 'result',
-                'supplier_meta', 'staging', 'content_approval'}, ('preview', 'sources', 'result'), '/journal')
+                'supplier_meta', 'staging', 'content_approval', 'automatic_availability_labels',
+                'supplier_availability_expires_at'}, ('preview', 'sources', 'result'), '/journal')
     preview = s.obj(job['preview'], ShopImportPreview.model_fields, ('preview_id', 'shop', 'supplier', 'items'), '/preview')
     if preview['preview_id'] != identifier or preview['shop'] != namespace:
         raise s.Unverified('journal_target_changed', '/preview')
@@ -189,6 +190,10 @@ def parse(proof, job, namespace, identifier, drafts):
             raise s.Unverified('journal_source_lineage_unverified', '/sources')
         sources[source.id] = source
         proof.importer(source, f'/sources/{i}', supplier=supplier, targets=[namespace])
+    if 'automatic_availability_labels' in job:
+        labels = s.obj(job['automatic_availability_labels'], path='/automatic_availability_labels')
+        if not set(labels) <= {source.code for source in sources.values()} or any(not isinstance(v, str) for v in labels.values()):
+            raise s.Unverified('journal_source_lineage_unverified', '/automatic_availability_labels')
     previews, all_ids, empty_invalid = {}, set(), set()
     for i, item in enumerate(s.array(preview['items'], '/preview/items', nonempty=True)):
         s.obj(item, set(ImportItem.model_fields) | {'product_write_attempted'}, ('code', 'product_ids', 'payload', 'status'), f'/preview/items/{i}')

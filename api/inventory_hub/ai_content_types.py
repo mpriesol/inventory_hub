@@ -249,7 +249,7 @@ class ContentReview(StrictModel):
 
 class JobAction(StrictModel):
     expected_revision: int
-    action: Literal["start", "import", "cancel", "retry_import", "archive", "restore", "reopen"]
+    action: Literal["start", "import", "cancel", "retry_import", "renew_import_preview", "archive", "restore", "reopen"]
 
 
 class RuleProposal(StrictModel):

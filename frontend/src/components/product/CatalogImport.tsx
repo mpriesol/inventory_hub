@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ImportPreview, ImportResult, catalogImageUrl } from '../../api/catalog';
+import { ImportPreview, ImportResult, catalogImageUrl, canRenewImportPreview } from '../../api/catalog';
 import { Modal } from '../ui/Modal';
 import { Button } from '../ui/Button.new';
 import { ProductThumb } from './ProductDisplay';
 import { CatalogMatches } from './CatalogMatches';
 
-export function CatalogImport({ preview, result, shopName, sending, error, onConfirm, onRetry, onClose, onReprice, onExclude, visibilityLabel }: {
+export function CatalogImport({ preview, result, shopName, sending, error, onConfirm, onRetry, onClose, onReprice, onExclude, onRenewPreview, visibilityLabel }: {
   preview: ImportPreview | null; result: ImportResult | null; shopName: string; sending: boolean; error: string;
   visibilityLabel?: string;
   onConfirm: () => void; onRetry: () => void; onClose: () => void;
+  onRenewPreview?: (overrides: Record<number, string>) => void;
   onReprice: (overrides: Record<number, string>) => void;
   onExclude: (ids: number[], overrides: Record<number, string>) => void;
 }) {
@@ -37,6 +38,8 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
   const running = result?.status === 'running' || result?.status === 'queued';
   const canRetry = !!result && !running && (result.status === 'failed' || !!counts.failed || !!counts.uncertain);
   const issues = [...(result?.errors || preview?.errors || []), ...(error ? [error] : [])];
+  const expired = !!preview && Date.now() >= Date.parse(preview.expires_at);
+  const renewPreview = !!onRenewPreview && canRenewImportPreview(preview, result, error);
   return <Modal open onClose={onClose} title={t(result ? 'catalog.importResult' : 'catalog.importPreview')}><div className="supplier-catalog catalog-import" role="dialog" aria-label={t('catalog.importPreview')}>
     <div className="catalog-import-heading"><div><div className="catalog-eyebrow">{t('catalog.targetShop')}</div><h2>{shopName}</h2></div>
       <span className="catalog-badge">{visibilityLabel || t('catalog.hiddenValidation')}</span></div>
@@ -84,8 +87,9 @@ export function CatalogImport({ preview, result, shopName, sending, error, onCon
     {dirty && <p className={validPrices ? 'catalog-notice' : 'catalog-error'} role="status">{t(validPrices ? 'catalog.pricesNeedPreview' : 'catalog.codes.invalid_sale_price')}</p>}
     <div className="catalog-modal-actions"><Button variant="secondary" onClick={onClose}>{t('common.close')}</Button>
       {!result && dirty && <Button variant="secondary" loading={sending} disabled={!validPrices} onClick={() => onReprice(priceOverrides())}>{t('catalog.repricePreview')}</Button>}
-      {canRetry && <Button loading={sending} onClick={onRetry}>{t('catalog.retryImport')}</Button>}
-      {!result && <Button loading={sending} disabled={dirty || !counts.ready || !!preview?.errors.length || !preview || Date.now() >= Date.parse(preview.expires_at)} onClick={onConfirm}>{t('catalog.confirmImport', { count: counts.ready || 0 })}</Button>}
+      {renewPreview && !dirty && <Button disabled={!validPrices} loading={sending} onClick={() => onRenewPreview?.(priceOverrides())}>{t('productImport.freshPreview')}</Button>}
+      {canRetry && !renewPreview && <Button loading={sending} onClick={onRetry}>{t('catalog.retryImport')}</Button>}
+      {!result && <Button loading={sending} disabled={dirty || !counts.ready || !!preview?.errors.length || !preview || expired || renewPreview} onClick={onConfirm}>{t('catalog.confirmImport', { count: counts.ready || 0 })}</Button>}
     </div>
   </div></Modal>;
 }

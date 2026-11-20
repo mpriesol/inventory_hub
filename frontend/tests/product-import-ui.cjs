@@ -32,7 +32,7 @@ const reseller = { name: 'Regional Supply', url: 'https://reseller.example.test/
 const skuBrands = [{ id: 1, code: 'TP', name: 'Topeak', kind: 'brand', aliases: ['Topeak'], suppliers: [reseller] },
   { id: 2, code: 'BB', name: 'BBB Cycling', kind: 'brand', aliases: ['BBB Cycling', 'BBB'] }];
 const registryBrand = name => skuBrands.find(brand => [brand.name, ...brand.aliases].includes(name));
-const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false;
+const calls = []; let failEdit = false, deferRead = false, releaseRead, failSourceRetry = false, failSourceSkip = false, publishError = '';
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, method: init.method || 'GET', body });
@@ -130,6 +130,7 @@ global.fetch = async (path, init = {}) => {
   else if (path.endsWith('/ai-start')) { server.revision++; server.rows.filter(row => row.ai_job).forEach(row => { row.ai_job.status = 'generating'; row.ai_job.actual_usd = '0.03'; }); }
   else if (path.endsWith('/ai-apply')) { server.revision++; server.status = 'draft'; server.rows.filter(row => row.ai_job).forEach(row => { if (!row.manual_fields.includes('name')) row.values.name = 'AI názov'; if (!row.manual_fields.includes('description_html')) { row.values.description_html = '<p>Vylepšené AI</p>'; row.provenance.description_html = 'ai'; } row.ai_job.status = 'completed'; }); }
   else if (path.endsWith('/publish-preview')) { assert.equal(server.status, 'saved'); server.revision++; server.publication_result = null; server.publication_preview_retryable = false; server.publication = { preview_id: 'preview-1', options, errors: [], warnings: [], expires_at: new Date(Date.now() + 60000).toISOString(), items: ['biketrek','xtrek'].map(shop => ({ shop, code: 'PL-G', name: 'Rodina duší', product_ids: [1, 2], variants_count: 2, status: 'ready', warnings: [], errors: [], payload: { code: 'PL-G', active_yn: false } })) }; }
+  else if (path.endsWith('/publish') && publishError) return { ok: false, status: 409, json: async () => ({ detail: { code: publishError } }) };
   else if (path.endsWith('/publish')) { assert.equal(body.preview_id, server.publication.preview_id); server.revision++; server.publication_result = { ...server.publication, status: 'completed', items: server.publication.items.map(item => ({ ...item, status: item.status === 'exists' ? 'exists' : 'created' })) }; server.rows.forEach(row => row.publication_links = row.values.target_shops.map(shop => ({shop,status:'created',shop_admin_url:`https://${shop}.example.test/admin/${row.id}`,shop_url:`https://${shop}.example.test/product/${row.id}`}))); }
   else if (path !== '/api/product-imports/test-draft') throw new Error(`Unexpected API ${path}`);
   return { ok: true, status: 200, json: async () => clone(server) };
@@ -450,6 +451,21 @@ async function render(entry) {
   const freshCalls = calls.slice(beforeFreshPreview).filter(call => call.method !== 'GET');
   assert.deepEqual(freshCalls.map(call => call.path), ['/api/product-imports/test-draft/publish-preview'], 'Fresh preview is explicit and invokes no save, AI or product publication');
   assert.equal(server.publication_result, null); assert.equal(freshPreview(), null);
+  publishError = 'import_source_availability_changed';
+  const publishButton = () => [...document.querySelectorAll('#import-publication button')].find(button => button.textContent.includes('Odoslať'));
+  await click(publishButton());
+  assert.equal(server.publication_result, null, 'A changed supplier offer rejects confirmation before any write');
+  assert(document.body.textContent.includes(i18n.t('catalog.codes.import_source_availability_changed')));
+  assert(freshPreview() && !freshPreview().disabled && publishButton().disabled);
+  publishError = '';
+  await click(freshPreview());
+  assert.equal(freshPreview(), null);
+  server.publication_result = { ...server.publication, status: 'failed', errors: ['biketrek:import_source_availability_changed'], items: server.publication.items.map(item => ({ ...item, status: 'failed' })) };
+  server.publication_preview_retryable = true;
+  await render('/product-import?draft=test-draft&case=changed-after-review');
+  assert(document.body.textContent.includes(`BIKETREK · ${i18n.t('catalog.codes.import_source_availability_changed')}`));
+  assert(!document.body.textContent.includes('biketrek:import_source_availability_changed'));
+  assert(freshPreview() && !freshPreview().disabled);
   server.publication_result = { ...server.publication, status: 'failed', items: server.publication.items.map((item, index) => ({ ...item, status: index ? 'uncertain' : 'created' })) };
   server.publication_preview_retryable = false;
   await render('/product-import?draft=test-draft&case=mixed-outcome');

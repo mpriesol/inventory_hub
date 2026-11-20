@@ -1,3 +1,4 @@
+import { canRenewImportPreview, isImportAvailabilityError } from '../../api/catalog';
 import { aiErrorText } from '../../utils/aiErrors';
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -69,6 +70,8 @@ export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   const importErrors = [...new Set([...(job.preview?.errors || []), ...(job.import_result?.errors || []), ...(job.import_result?.items || job.preview?.items || []).flatMap(i => i.errors)])];
+  const canRenewImport = job.status === 'ready' || job.status === 'import_failed' && (!!job.import_result || isImportAvailabilityError(job.error || ''));
+  const renewImport = canRenewImport && canRenewImportPreview(job.preview, job.import_result, job.error || '');
   const unknownImport = job.import_result?.items.some(i => i.status === 'uncertain');
   const mismatchedFields = job.update_result?.status === 'uncertain' ? job.update_result.mismatched_fields || [] : [];
   const canFork = !staged && !pendingUpdate && job.kind === 'product' && !job.update_only && !unknownImport && !['queued','generating','preparing_import','import_queued','importing'].includes(job.status);
@@ -85,7 +88,7 @@ export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
     <div className="ai-next-step"><strong>{t('ai.nextStep')}</strong><p>{t(aiJobNextKey(job), { defaultValue: t(`ai.next.${job.status}`, {defaultValue:job.status}) })}</p></div>
     {staged && <div className="ai-actions"><a className="ai-draft-link" aria-disabled={busy || dirty} onClick={event => { if (busy || dirty) event.preventDefault(); }} href={`/product-import?draft=${encodeURIComponent(job.staging_id!)}`}>{t(job.staging?.publication_status ? 'ai.staging.openResult' : 'ai.staging.openDraft')}</a>{dirty && <small>{t('ai.unsaved')}</small>}</div>}
     {importErrors.length > 0 && <div className="ai-notice ai-error" role="alert"><strong>{t('ai.importBlockers')}</strong>{importErrors.map(v => <p key={v}>{t(`catalog.codes.${v}`, { defaultValue: t(`ai.errors.${v}`, { defaultValue: v }) })}</p>)}{unknownImport && <p>{t('ai.unknownImportHelp')}</p>}</div>}
-    {!staged && !job.update_only && ['import_failed','import_blocked'].includes(job.status) && <button disabled={busy} onClick={() => action('retry_import')}>{t(unknownImport ? 'ai.reconcileImport' : 'ai.retryImport')}</button>}
+    {!staged && !job.update_only && ['import_failed','import_blocked'].includes(job.status) && <button disabled={busy} onClick={() => action(renewImport ? 'renew_import_preview' : 'retry_import')}>{t(renewImport ? 'productImport.freshPreview' : unknownImport ? 'ai.reconcileImport' : 'ai.retryImport')}</button>}
     {!stageFinished && !pendingUpdate && ['import_blocked','exists','completed','cancelled'].includes(job.status) && job.output && <button disabled={busy} onClick={() => action('reopen')}>{t('ai.reopenContent')}</button>}
     {staged ? <><p className="ai-notice">{t('ai.staging.help')}</p><AiPolicyFields value={job.policy} origins={job.origins} /></> : job.update_only ? <p className="ai-notice">{t('ai.updateOnlyHelp')}</p> : <AiPolicyFields value={job.policy} origins={job.origins} />}
     {job.applied_rules && <details><summary>{t('ai.appliedRules')}</summary><p>{t('ai.appliedRulesHelp')} · {t('ai.publishedVersion', {version:job.rules_version})}</p>{job.applied_rules.map(rule => <details key={rule.id}><summary>{rule.name}</summary><pre className="ai-original">{rule.text}</pre></details>)}{job.source_kind !== 'shop' && job.resolved_import_policy && <><h3>{t('ai.importPolicy')}</h3><p>{t('ai.supplierAvailabilityConfigHelp')}</p><dl>{(['orderable','unknown','supplier_name'] as const).map(key => <React.Fragment key={key}><dt>{t(`ai.importPolicyFields.${key}`)}</dt><dd>{job.resolved_import_policy?.[key] || '—'}</dd></React.Fragment>)}<dt>{t('ai.hideZeroStock')}</dt><dd>{job.resolved_import_policy.hide_zero_stock == null ? '—' : t(job.resolved_import_policy.hide_zero_stock ? 'ai.on' : 'ai.off')}</dd></dl></>}<h3>{t('ai.parameterRegistry')}</h3>{job.parameter_registry?.length ? <ul>{job.parameter_registry.map(parameter => <li key={parameter.name}><strong>{parameter.name}</strong> · {t(`ai.${parameter.scope}`)}{parameter.required ? ` · ${t('ai.required')}` : ''}{parameter.values.length ? ` · ${parameter.values.join(' | ')}` : ''}</li>)}</ul> : <p>{t('ai.noRegisteredParameters')}</p>}</details>}
@@ -161,8 +164,9 @@ export function AiJobDetail({ job, onChange, onDirtyChange, onBusyChange }: {
     {!stageFinished && !pendingUpdate && !['generating', 'importing', 'completed', 'exists', 'uncertain', 'cancelled'].includes(job.status) && <button disabled={busy} onClick={() => action('cancel')}>{t('ai.cancelJob')}</button>}
     <details><summary>{t('ai.history')}</summary>{job.events?.map((e, i) => <p key={i}><time>{new Date(e.at).toLocaleString()}</time> · {t(aiContentStatusKey(job, e.status), { defaultValue: e.status })} · {e.note}</p>)}</details>
     {error && <div role="alert" className="ai-notice ai-error">{error}</div>}
-    {!staged && !job.update_only && importOpen && job.preview && <CatalogImport key={job.preview.preview_id} preview={job.preview} result={job.import_result || null} shopName={job.shop} sending={busy} error={error}
+    {!staged && !job.update_only && importOpen && job.preview && <CatalogImport key={job.preview.preview_id} preview={job.preview} result={job.import_result || null} shopName={job.shop} sending={busy} error={error || job.error || ''}
       visibilityLabel={t(job.policy.active_after_import ? 'ai.activeAfterImport' : 'ai.hiddenAfterImport')}
+      onRenewPreview={canRenewImport ? () => action('renew_import_preview') : undefined}
       onClose={() => setImportOpen(false)} onConfirm={() => action('import')} onRetry={() => action('retry_import')}
       onExclude={ids => perform(() => aiRequest(`/jobs/${job.id}/fork`, {expected_revision:job.revision,product_ids:job.product_ids.filter(id => !ids.includes(id)),reuse_content:true,use_ai:job.use_ai}))}
       onReprice={overrides => perform(() => aiRequest<AiJob>(`/jobs/${job.id}/prices`, { expected_revision: job.revision, sale_price_overrides: overrides }))} />}

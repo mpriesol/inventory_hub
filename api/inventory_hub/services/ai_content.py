@@ -292,7 +292,7 @@ async def review(db, job, request):
     return summary(job, detail=True)
 
 
-async def prepare_import(db, job):
+async def prepare_import(db, job, *, require_confirmation=False):
     if getattr(job, "kind", "product") == "supplier_lookup":
         raise CatalogError("ai_job_kind_unsupported", "Supplier lookups cannot publish products", 409)
     ctx = job.context
@@ -334,8 +334,9 @@ async def prepare_import(db, job):
     elif all(i.status == "exists" for i in preview.items):
         event(job, "exists", "Already present in the selected shop")
     else:
-        event(job, "ready" if ctx["resolved"]["policy"]["confirm_import"] else "import_queued",
-              "Preview ready; awaiting confirmation" if ctx["resolved"]["policy"]["confirm_import"] else "Automatic import authorized by frozen policy")
+        confirm = require_confirmation or ctx["resolved"]["policy"]["confirm_import"]
+        event(job, "ready" if confirm else "import_queued",
+              "Preview ready; awaiting confirmation" if confirm else "Automatic import authorized by frozen policy")
     return preview
 
 
@@ -364,6 +365,22 @@ async def action(db, job, request):
         event(job, "cancelled", "Cancelled by operator")
     elif request.action == "start":
         await start(db, job)
+    elif request.action == "renew_import_preview":
+        if (job.status not in ("ready", "import_failed") or job.kind != "product" or not job.preview_id
+                or job.context.get("staging_id") or job.context.get("update_only")):
+            raise CatalogError("ai_import_state", "This job cannot renew its import preview", 409)
+        doc = catalog_import._load_job(catalog_import._path(job.context["shop"], job.preview_id))
+        result = doc.get("result")
+        if result is None:
+            renewable = (job.status == "import_failed" and job.error in catalog_import.CREATION_AVAILABILITY_ERRORS
+                         or job.status == "ready" and datetime.fromisoformat(doc["preview"]["expires_at"]) <= now())
+        else:
+            renewable = bool(catalog_import.replaceable_availability_errors(result))
+        if not renewable or (doc.get("content_approval") or {}).get("job_id") != job.id:
+            raise CatalogError("ai_import_state", "The original import must be reconciled", 409)
+        job.context = {key: value for key, value in job.context.items() if key != "retry_import"}
+        job.error = None
+        await prepare_import(db, job, require_confirmation=True)
     elif request.action in ("import", "retry_import"):
         if job.context.get("staging_id"):
             raise CatalogError("import_staging_confirmation_required", "Apply AI content in its import draft; publication is separate", 409)

@@ -4,6 +4,7 @@ import json
 import unittest
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -534,6 +535,63 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
         self.assertEqual(self.client.sent, [])
 
+    async def test_stock_feed_refreshes_open_draft_and_publication_without_overwriting_manual_cells(self):
+        from inventory_hub.services import supplier_availability as stock
+        from inventory_hub.services.supplier_availability_source import observation
+        from inventory_hub.supplier_availability_types import SupplierAvailabilityInput, SupplierAvailabilityRunInput
+
+        supplier = 'paul-lange'
+        path = config_io.supplier_path(supplier)
+        cfg = json.loads(path.read_text())
+        cfg['feeds']['sources']['stock'] = {'mode': 'local', 'local_path': 'stock.xml'}
+        cfg['adapter_settings']['availability'] = {'orderable': 'do 7 dní', 'unknown': 'overíme'}
+        path.write_text(json.dumps(cfg))
+        async with self.sessions() as db:
+            await stock.configure(db, supplier, SupplierAvailabilityInput(expected_revision=0, feed_key='stock'))
+            supplier_id = await db.scalar(select(Supplier.id).where(Supplier.code == supplier))
+            await db.commit()
+
+        async def set_stock(automatic, manual):
+            async with self.sessions() as db:
+                await stock.request_run(db, supplier, SupplierAvailabilityRunInput(expected_revision=1))
+                plan = await stock.start_run(db, supplier_id)
+                await stock.accept_run(db, plan, [observation(first, automatic), observation(second, manual)], 120)
+                await db.commit()
+
+        def labels(result):
+            return {r['values']['supplier_code']: r['values']['availability'] for r in result['rows']}
+
+        # A preparation can predate the first authoritative stock feed run.
+        request = self.request().model_copy(update={'product_ids': self.ids[:2]})
+        draft = await self.create(request)
+        first, second = [r['values']['supplier_code'] for r in draft['rows']]
+        self.assertEqual(labels(draft), {first: 'overíme', second: 'overíme'})
+        draft = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{
+            'id': draft['rows'][1]['id'], 'values': {'availability': 'Podľa dohody'}}])
+        await set_stock('1', '1')
+        expected = {first: 'do 7 dní', second: 'Podľa dohody'}
+        async with self.sessions() as db:
+            stored = await service.get_draft(db, draft['id'])
+            before = deepcopy(stored.document)
+            self.assertEqual(labels(await service.public(db, stored, reopen=True)), expected)
+            self.assertEqual(stored.document, before)
+        fresh = await self.create(request.model_copy(update={'request_id': uuid4()}), approve_identity=False)
+        self.assertEqual(labels(fresh), {first: 'do 7 dní', second: 'do 7 dní'})
+        saved = await self.mutate(draft, service.save)
+        self.assertEqual(labels(saved), expected)
+        await set_stock('0', '0')
+        preview = await self.mutate(saved, service.preview)
+        self.assertEqual(labels(preview), {first: 'overíme', second: 'Podľa dohody'})
+        payloads = {item['product_ids'][0]: item['payload']['availability'] for item in preview['publication']['items']}
+        self.assertEqual(payloads, {r['id']: r['values']['availability'] for r in preview['rows']})
+        await set_stock('2', '2')
+        async with self.sessions() as db:
+            stored = await service.get_draft(db, draft['id'])
+            self.assertEqual(stored.document['saved_hash'], service.content_hash(stored.document))
+            self.assertEqual(labels(await service.public(db, stored, reopen=True)), labels(preview))
+            self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+        self.assertEqual(self.client.sent, [])
+
     async def test_explicit_publication_uses_edited_snapshot_after_feed_refresh(self):
         result = await self.create()
         from inventory_hub.services.sku_policy import add_brand_alias, registered_brand_id
@@ -743,6 +801,46 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await db.get(ProductGroup, cards[0].group_id)).code, 'PL-G-RECEIPT-FAMILY')
             self.assertEqual(await db.scalar(select(func.count()).select_from(ProductVariantAttribute)), 2)
             self.assertEqual(await db.scalar(text('SELECT count(*) FROM stock_movements')), 0)
+
+    async def test_shorter_second_shop_deadline_and_changed_stock_block_both_queues(self):
+        from inventory_hub.db_models import SupplierProduct
+        from inventory_hub.supplier_availability_types import DEFAULT_FRESHNESS_SECONDS
+
+        path = config_io.shop_path('xtrek')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(config_io.shop_path('biketrek').read_text())
+        draft = await self.create(self.request().model_copy(update={'product_ids': self.ids[:2]}))
+        second = draft['rows'][1]['id']
+        draft = await self.mutate(draft, service.patch_rows, DraftPatch, rows=[{'id': second, 'values': {
+            'target_shops': ['xtrek'], 'target_category_codes': {'xtrek': 'K-TEST'}}}])
+        saved = await self.mutate(draft, service.save)
+        async with self.sessions() as db:
+            listing = await db.get(SupplierProduct, second)
+            fetched = catalog_import.now() - timedelta(seconds=DEFAULT_FRESHNESS_SECONDS - 300)
+            listing.attributes = {**listing.attributes, 'catalog': {**listing.attributes['catalog'], 'fetched_at': fetched.isoformat()}}
+            await db.commit()
+        result = await self.mutate(saved, service.preview)
+        previews = {shop: v['preview'] for shop, v in result['publications'].items()}
+        self.assertLess(previews['xtrek']['expires_at'], previews['biketrek']['expires_at'])
+        self.assertEqual(result['publication']['expires_at'], previews['xtrek']['expires_at'])
+        async def refused(code):
+            with self.assertRaises(catalog.CatalogError) as raised:
+                await self.mutate(result, service.publish, DraftPublish, preview_id=result['publication']['preview_id'])
+            self.assertEqual(raised.exception.code, code)
+            self.assertTrue(all(service.target_result(shop, preview) is None for shop, preview in previews.items()))
+        with patch.object(catalog_import, 'now', return_value=catalog_import.now() + timedelta(minutes=6)):
+            await refused('preview_expired')
+        async with self.sessions() as db:
+            listing = await db.get(SupplierProduct, second)
+            listing.attributes = {**listing.attributes, 'catalog': {**listing.attributes['catalog'],
+                'supplier_stock': '0', 'supplier_stock_min': None, 'supplier_available': False, 'supplier_external_available': False}}
+            await db.commit()
+        await refused('import_source_availability_changed')
+        self.assertEqual(self.client.sent, [])
+        resaved = await self.mutate(result, service.save)
+        self.assertIsNone(resaved['publication'])
+        self.assertEqual(resaved['publications'], {})
+        self.assertEqual(next(r for r in resaved['rows'] if r['id'] == second)['values']['availability'], 'overíme')
 
     async def test_per_row_two_shop_publication_and_hub_only_save_are_replay_safe(self):
         clients = {'biketrek': self.client, 'xtrek': FakeContentShop()}

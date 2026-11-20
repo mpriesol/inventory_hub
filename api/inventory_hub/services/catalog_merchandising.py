@@ -1,7 +1,9 @@
 """Deterministic category and availability rules; never writes stock quantities."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from inventory_hub.services.catalog import CatalogError
+from inventory_hub.services.catalog import CatalogError, public_product
+from inventory_hub.services.supplier_availability import exact_source_evidence
+from inventory_hub.supplier_availability_types import DEFAULT_FRESHNESS_SECONDS
 from inventory_hub.config_normalize import normalize_supplier_availability
 
 
@@ -67,21 +69,72 @@ def availability_policy(supplier, config=None):
             'supplier_name': {'paul-lange': 'Paul Lange', 'northfinder': 'Northfinder'}.get(supplier, supplier)}
 
 
-def apply_availability(payload, products, policy):
+def _listing_label(product, policy, at):
+    positive = any(q is not None and q > 0 for q in (product.supplier_stock, product.supplier_stock_min))
+    orderable = positive or product.supplier_available is True or product.supplier_external_available is True
+    unavailable = product.supplier_available is False and product.supplier_external_available is not True
+    if product.supplier == 'husky':
+        expiry = product.supplier_observation_expires_at
+        fresh = bool(expiry and expiry > at and 'husky_public_stock_only' not in product.warnings)
+        count = product.supplier_stock if product.supplier_stock is not None else product.supplier_stock_min
+        orderable = fresh and orderable and count is not None and count >= 2
+        unavailable = fresh and unavailable
+    if orderable:
+        return policy['orderable']
+    return policy.get('unavailable', policy['unknown']) if unavailable else policy['unknown']
+
+
+async def resolve_catalog_availability(db, supplier_code, products, policy, *, at=None):
+    """Resolve new listings by exact supplier SKU, independently of the chosen shop code or brand."""
+    at = at or datetime.now(timezone.utc)
+    by_code = {p.code: p for p in products if p.supplier == supplier_code}
+    evidence = await exact_source_evidence(db, supplier_code, by_code.keys(), at, unknown_label=policy['unknown'])
+    resolved = {}
+    for code, product in by_code.items():
+        row = dict(label=policy['unknown'], orderable=True, status='missing_observation', observed_at=None, expires_at=None)
+        resolved[code] = row
+        if supplier_code == 'sloger' and 'sloger_b2b_feed_fallback' in product.warnings:
+            row['status'] = 'skipped'
+            continue
+        if code not in evidence:
+            continue
+        stored, projection = evidence[code]
+        status = projection['status']
+        row.update(status=status, orderable=projection['orderable'])
+        if status == 'missing_feed_item':
+            row['label'] = projection['label']
+        elif projection['fresh']:
+            if projection['available'] is True:
+                row['label'] = projection['label']
+            elif projection['available'] is False:
+                row['label'] = policy.get('unavailable', policy['unknown'])
+            row['observed_at'] = datetime.fromisoformat(projection['observed_at'])
+            row['expires_at'] = datetime.fromisoformat(projection['expires_at'])
+        elif status == 'unconfigured' and supplier_code not in ('sloger', 'husky') and stored and (stored.attributes or {}).get('catalog'):
+            # Suppliers using only the listing feed still need its latest persisted
+            # row. A historical draft or invoice timestamp cannot renew that stock.
+            current = public_product(stored)
+            observed = current.fetched_at
+            if current.supplier != supplier_code or current.code != code or observed is None or observed.tzinfo is None:
+                continue
+            expiry = observed + timedelta(seconds=DEFAULT_FRESHNESS_SECONDS)
+            if observed <= at < expiry:
+                # Some listing parsers expose quantities without a corresponding flag.
+                if current.supplier_stock_external is not None and current.supplier_stock_external > 0:
+                    current.supplier_external_available = True
+                if current.supplier_available is None and current.supplier_stock == 0:
+                    current.supplier_available = False
+                row.update(label=_listing_label(current, policy, at), status='listing', observed_at=observed, expires_at=expiry)
+            else:
+                row['status'] = 'stale'
+    return resolved
+
+
+def apply_availability(payload, products, policy, resolved=None):
     def apply(obj, product):
-        positive = (product.supplier_stock is not None and product.supplier_stock > 0) or bool(product.supplier_stock_min and product.supplier_stock_min > 0)
-        orderable = positive or product.supplier_available is True or product.supplier_external_available is True
-        unavailable = product.supplier_available is False and product.supplier_external_available is not True
-        if product.supplier == 'husky':
-            expiry = product.supplier_observation_expires_at
-            fresh = bool(expiry and expiry > datetime.now(timezone.utc)
-                         and 'husky_public_stock_only' not in product.warnings)
-            count = product.supplier_stock if product.supplier_stock is not None else product.supplier_stock_min
-            orderable = fresh and orderable and count is not None and count >= 2
-            unavailable = fresh and unavailable
-        obj['availability'] = policy['orderable'] if orderable else policy.get('unavailable', policy['unknown']) if unavailable else policy['unknown']
-        # Unknown/zero supplier stock is orderable; visibility remains governed
-        # by the separate import review/approval contract.
+        obj['availability'] = (resolved[product.code]['label'] if resolved is not None
+                               else _listing_label(product, policy, datetime.now(timezone.utc)))
+        # Create-only imports keep their review visibility and basket policy.
         obj['can_add_to_basket_yn'] = True
     variants = payload.get('variants')
     if variants:

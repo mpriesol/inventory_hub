@@ -6,6 +6,7 @@ cells. Remote delivery uses catalog_import's existing create-only journal.
 import asyncio
 from collections import Counter, defaultdict
 from copy import deepcopy
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
 
@@ -24,7 +25,7 @@ from inventory_hub.product_import_types import DraftRevision, ImportValues
 from inventory_hub.services import ai_content, catalog_import
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
 from inventory_hub.services.catalog_identity import parent_shop_code
-from inventory_hub.services.catalog_merchandising import apply_availability, availability_policy, category_chain
+from inventory_hub.services.catalog_merchandising import availability_policy, category_chain, resolve_catalog_availability
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK
 
@@ -106,24 +107,21 @@ def target_result(shop, preview):
         raise
 
 
-def source_preview_retryable(draft):
-    """Only a proved zero-product-attempt expiry can replace publication IDs."""
+def replaceable_availability_error(draft):
+    """An obsolete stock preview can be replaced only before any product POST."""
     if not getattr(draft, 'document', None) or not getattr(draft, 'shop', None):
-        return False
-    found_expiry = False
+        return None
+    reason = None
     for shop, preview in publication_previews(draft).items():
         result = target_result(shop, preview)
         if result is None:
             continue
-        if result['status'] in ('queued', 'running') or any(
-                item.get('product_write_attempted') is not False or item['status'] not in ('ready', 'failed', 'exists')
-                for item in result['items']):
-            return False
-        errors = result.get('errors', []) + [error for item in result['items'] for error in item.get('errors', [])]
-        if any(error != 'import_source_availability_expired' for error in errors):
-            return False
-        found_expiry = found_expiry or bool(errors)
-    return found_expiry
+        errors = catalog_import.replaceable_availability_errors(result)
+        if errors is None:
+            return None
+        if errors:
+            reason = errors[0]
+    return reason
 
 
 def publication_result(draft):
@@ -235,6 +233,11 @@ async def public(db, draft, *, reopen=False):
     if reopen:
         document = await rechecked_document(db, draft)
     rows = deepcopy(document['rows'])
+    previews = publication_previews(draft)
+    if previews:
+        show_preview_availability(rows, previews, draft.shop)
+    elif reopen and draft.status in ('draft', 'saved'):
+        await refresh_availability(db, draft.supplier, rows)
     for row in rows:
         row['values'].setdefault('ai_category_profile', 'auto')
         row['values']['target_shops'] = row_targets(row, draft.shop)
@@ -289,7 +292,7 @@ async def public(db, draft, *, reopen=False):
             'categories': document['categories'], 'rows': rows, 'publication': document.get('publication'),
             'publication_result': result, 'publication_state': publication_state(result), 'created_at': draft.created_at,
             'updated_at': draft.updated_at,
-            'publication_preview_retryable': bool(result) and source_preview_retryable(draft),
+            'publication_preview_retryable': bool(result) and replaceable_availability_error(draft) is not None,
             'source_lookup': source_lookup_public(draft),
             'receiving_origin': document.get('receiving_origin'),
             **({'identity_review_required': False, 'identity_review_count': 0} if result else await identity_summary(db, draft, document=document))}
@@ -318,8 +321,47 @@ async def history(db, q=''):
                        'updated_at': d.updated_at, 'rows_count': len(d.document.get('rows', []))} for d in drafts]}
 
 
-def to_source(row):
+def availability_source(row):
     product = CatalogProduct.model_validate(row['source'])
+    code = row['values']['supplier_code']
+    if code != product.code:
+        # Stock from the originally selected offer cannot prove availability
+        # for an edited supplier code. A current exact observation still can.
+        fields = ('availability', 'supplier_available', 'supplier_stock', 'supplier_stock_min',
+                  'supplier_stock_raw', 'supplier_stock_external', 'supplier_stock_external_raw',
+                  'supplier_external_available', 'supplier_observation_expires_at', 'sloger_observation', 'delivery_date')
+        product = product.model_copy(update={'code': code, **dict.fromkeys(fields)})
+    return product
+
+
+async def refresh_availability(db, supplier, rows):
+    automatic = [r for r in rows if 'availability' not in r['manual_fields'] and not link_only(r)]
+    if automatic:
+        policy = availability_policy(supplier, supplier_config(supplier))
+        products = [availability_source(row) for row in automatic]
+        decisions = await resolve_catalog_availability(db, supplier, products, policy)
+        for row, product in zip(automatic, products):
+            row['values']['availability'] = decisions[product.code]['label']
+
+
+def show_preview_availability(rows, previews, primary):
+    """Show the frozen outbound label even when stock changed after the Hub save."""
+    by_id = {row['id']: row for row in rows}
+    for shop in sorted(previews, key=lambda shop: shop == primary):
+        for item in previews[shop].get('items', []):
+            payload = item.get('payload') or {}
+            variants = {v['code']: v.get('availability') for v in payload.get('variants', [])}
+            for row_id in item['product_ids']:
+                row = by_id.get(row_id)
+                if row is None:
+                    continue
+                label = variants.get(row['values']['code']) if item.get('variants_count') else payload.get('availability')
+                if label is not None:
+                    row['values']['availability'] = label
+
+
+def to_source(row):
+    product = availability_source(row)
     v = ImportValues.model_validate(row['values'])
     prices = product.prices.model_copy(update={'currency': v.currency,
         'vat_percent': Decimal(v.vat_percent) if v.vat_percent else None,
@@ -712,10 +754,9 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
         except CatalogError as error:
             shops.append({'code': shop.code, 'name': shop.name, 'categories': [], 'error': error.code})
     policy = availability_policy(request.supplier, cfg)
+    availability = await resolve_catalog_availability(db, request.supplier, products, policy)
     rows = []
     for p in products:
-        availability = {}
-        apply_availability(availability, [p], policy)
         try:
             sale = money(catalog_import._prices(p, request.options, cfg, True)[0]['pricelists'][0]['price_original'])
         except (ValueError, ArithmeticError):
@@ -730,7 +771,7 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
             parameters=p.parameters, variant_attributes=p.variant_attributes,
             purchase_net=money(p.prices.purchase_net), retail_gross=money(p.prices.retail_gross), sale_gross=sale,
             vat_percent=money(p.prices.vat_percent), currency=p.prices.currency,
-            availability=availability['availability'], target_shops=[request.shop],
+            availability=availability[p.code]['label'], target_shops=[request.shop],
             target_category_codes={shop: getattr(mapped[p.id], 'target_category_code', None) for shop, mapped in mapped_targets.items()})
         source_kind = 'invoice' if receiving_rows is not None and receiving_rows[p.id].get('catalog_product_id') is None else 'feed'
         provenance = {key: source_kind for key in values.model_fields}
@@ -877,6 +918,7 @@ async def patch_rows(db, draft, request):
     if document.get('automation', {}).get('version') == 1:
         document['automation'] = {**document['automation'], 'paused': True, 'pause_reason': 'draft_edited'}
     await prepare_sku_rows(db, draft, document)
+    await refresh_availability(db, draft.supplier, document['rows'])
     validate_rows(document)
     changed(draft, document, 'Manual import cells edited')
     await db.flush()
@@ -898,6 +940,7 @@ async def _save(db, draft):
     await prepare_sku_rows(db, draft, document)
     from inventory_hub.services.product_import_identity import guard_and_link
     linked = await guard_and_link(db, draft, document)
+    await refresh_availability(db, draft.supplier, document['rows'])
     validate_rows(document)
     # Basic receipt cards may precede merchandising. Unknown amounts stay NULL;
     # shop preview still applies every ordinary price/VAT/category validation.
@@ -1033,8 +1076,10 @@ async def _save(db, draft):
                 brand=row['values']['brand'] or None, actor='product-import')
         except AvailabilityError as error:
             raise CatalogError(error.code, 'Supplier source links require reconciliation', error.status) from None
-    document['saved_hash'] = content_hash(document)
-    changed(draft, document, 'Products saved in Hub; no shop writes', dirty=False)
+    saved_hash = content_hash(document)
+    invalidate = bool(publication_previews(draft)) and saved_hash != document.get('saved_hash')
+    document['saved_hash'] = saved_hash
+    changed(draft, document, 'Products saved in Hub; no shop writes', dirty=invalidate)
     draft.status = 'saved'
     await db.flush()
     return await public(db, draft)
@@ -1081,11 +1126,12 @@ def overlay_payload(item, rows, language, categories):
         parent_parameters = [p for p in parent_parameters if (p.name, p.value) in shared and p.name.casefold() not in axes]
     payload['parameters'] = catalog_import._parameters(parent_parameters, language)
     if item.variants_count:
-        by_code = {r['values']['code']: r['values'] for r in family}
+        manual = {r['values']['code']: r['values']['availability'] for r in family
+                  if 'availability' in r['manual_fields']}
         for variant in payload['variants']:
-            value = by_code[variant['code']]
-            variant['availability'] = value['availability']
-    else:
+            if variant['code'] in manual:
+                variant['availability'] = manual[variant['code']]
+    elif 'availability' in family[0]['manual_fields']:
         payload['availability'] = first['availability']
     item.name = description['title']
     return item
@@ -1115,11 +1161,12 @@ async def preview(db, draft, request):
     # Any attempted target retains its original journal, including partial and
     # uncertain multi-shop delivery. A fresh preview must never repeat a POST.
     if publication_result(draft):
-        if not source_preview_retryable(draft):
+        reason = replaceable_availability_error(draft)
+        if reason is None:
             return await public(db, draft)
         document = deepcopy(draft.document)
         document['previous_publications'] = [*document.get('previous_publications', []), {
-            'reason': 'import_source_availability_expired',
+            'reason': reason,
             'previews': {shop: value['preview_id'] for shop, value in publication_previews(draft).items()}}]
         document['publication'] = None
         document.pop('publications', None)
@@ -1137,9 +1184,6 @@ async def preview(db, draft, request):
         if catalog_import._target(catalog_import.shop_config(shop)) != document.get('targets', {draft.shop: document['target']}).get(shop):
             raise CatalogError('shop_target_changed', 'The target connection changed', 409)
         rows = deepcopy([row for row in document['rows'] if shop in row_targets(row, draft.shop)])
-        from inventory_hub.services.product_import_source import availability_snapshot
-        source_deadline = await availability_snapshot(db, rows, availability_policy(draft.supplier, supplier_config(draft.supplier))) \
-            if draft.supplier == 'sloger' else {}
         categories = next((entry['categories'] for entry in document.get('shops', []) if entry['code'] == shop), document['categories'])
         if shop != draft.shop:
             for row in rows:
@@ -1151,17 +1195,17 @@ async def preview(db, draft, request):
         validate_rows(validation)
         if any(row['errors'] or not row['values']['category_code'] for row in rows):
             raise CatalogError('import_invalid_rows', f'Every selected product needs a valid product category for {shop}', 422)
-        snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': rows, **source_deadline}
+        snapshot = {'draft_id': draft.id, 'hash': content_hash(document), 'rows': rows}
         options = ShopImportOptions.model_validate(document['options']).model_copy(update={'category_code': None})
         prepared = await catalog_import.create_preview(db, shop, ShopImportPreviewRequest(supplier=draft.supplier,
             feed_key=document['feed_key'], product_ids=[r['id'] for r in rows], options=options,
             sale_price_overrides={r['id']: r['values']['sale_gross'] for r in rows}),
             frozen_products=[to_source(r) for r in rows], staging=snapshot)
         previews[shop] = prepared.model_dump(mode='json')
-        previews[shop].update(source_deadline)
     document['publications'] = previews
     first = next(iter(previews.values()))
     document['publication'] = {**first, 'preview_id': first['preview_id'] if len(previews) == 1 else uuid4().hex,
+        'expires_at': min((p['expires_at'] for p in previews.values()), key=datetime.fromisoformat),
         'items': [{**item, 'shop': shop} for shop, value in previews.items() for item in value['items']],
         'errors': [shop + ':' + error for shop, value in previews.items() for error in value['errors']]}
     changed(draft, document, 'Explicit shop publication preview prepared', dirty=False)
@@ -1196,27 +1240,43 @@ async def publish(db, draft, request):
     # Recovery belongs to the already confirmed snapshot, even if AI was edited later.
     if not result:
         await assert_ai_applied(db, draft)
-        from inventory_hub.services.product_import_source import assert_current_availability
-        for target in publication_previews(draft).values():
-            await assert_current_availability(db, target)
     await assert_snapshot(db, {'draft_id': draft.id, 'hash': draft.document.get('saved_hash')})
-    tasks = queue_publications(draft, request.retry_failed)
+    tasks = await queue_publications(db, draft, request.retry_failed)
     document = deepcopy(draft.document)
     changed(draft, document, 'Shop publication explicitly confirmed', dirty=False)
     await db.flush()
     return await public(db, draft), tasks
 
 
-def queue_publications(draft, retry_failed=False):
+async def queue_publications(db, draft, retry_failed=False):
     tasks = []
     previews = publication_previews(draft)
-    # Validate every payload before queuing any target. Queue failures after this
-    # point remain durable and are reconciled against the same preview IDs.
+    # Validate every target before the first journal is queued. A second shop
+    # can cover different leaves with an earlier expiry than the first.
     if any(preview.get('errors') or any(item['status'] not in ('ready', 'exists') for item in preview['items'])
            for preview in previews.values()):
         raise CatalogError('preview_invalid', 'Resolve every selected shop preview before sending', 422)
+    try:
+        for shop, preview in previews.items():
+            await catalog_import.assert_queue_availability(db, shop, preview['preview_id'], retry_failed=retry_failed)
+    except CatalogError:
+        # Read back a previously attempted target even when an untouched
+        # sibling can no longer be created from the confirmed preview.
+        recovery = {shop: preview for shop, preview in previews.items()
+                    if retry_failed and any(item['status'] == 'uncertain'
+                        for item in (target_result(shop, preview) or {}).get('items', []))}
+        if not recovery:
+            raise
+        previews = recovery
     for shop, preview in previews.items():
-        _, run = catalog_import.queue_import(shop, preview['preview_id'], retry_failed, staging_id=draft.id)
+        try:
+            _, run = catalog_import.queue_import(shop, preview['preview_id'], retry_failed, staging_id=draft.id)
+        except CatalogError:
+            if not tasks:
+                raise
+            # A deadline or shop lock can still change between the checks.
+            # Start the already queued target; this sibling remains pending.
+            break
         if run:
             tasks.append((shop, preview['preview_id']))
     return tasks

@@ -28,7 +28,7 @@ from inventory_hub.services.catalog import CatalogError, selected_products, supp
 from inventory_hub.services.catalog_html import clean_description
 from inventory_hub.services.catalog_identity import cached_identities, connection_fingerprint, parent_shop_code, read_cache
 from inventory_hub.services.catalog_sort import variant_sort_key
-from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
+from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability, resolve_catalog_availability
 from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.services.product_identity import IDENTITY_WRITE_LOCK, RemoteIdentity, load_identity_index
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
@@ -55,6 +55,54 @@ def _target(cfg: dict) -> str:
 def assert_supplier_availability(supplier: str, frozen: dict | None) -> None:
     if frozen is None or frozen != availability_policy(supplier, supplier_config(supplier)):
         raise CatalogError("supplier_availability_changed", "Supplier availability settings changed; create a new preview", 409)
+
+
+def _assert_stock_deadline(document, current_deadline=None):
+    from inventory_hub.services.product_import_source import assert_availability_fresh
+    assert_availability_fresh(document)
+    assert_availability_fresh(document.get('staging'))
+    if current_deadline is not None:
+        assert_availability_fresh({'supplier_availability_expires_at': current_deadline.isoformat()})
+
+
+def _automatic_labels(document, sources):
+    labels = document.get('automatic_availability_labels')
+    if labels is not None:
+        return labels
+    # For old journals, start from the actual frozen standalone/variant text.
+    labels = {}
+    for item in document['preview']['items']:
+        payload = item['payload']
+        leaves = {leaf.get('code'): leaf for leaf in payload.get('variants') or [payload]}
+        for source_id in item['product_ids']:
+            product = sources[source_id]
+            labels[product.code] = leaves.get(product.shop_code, {}).get('availability')
+    return labels
+
+
+async def _assert_current_stock(db, document, products, labels):
+    _assert_stock_deadline(document)
+    automatic = [p for p in products if p.code in labels]
+    if not automatic:
+        return
+    current = await resolve_catalog_availability(db, document['preview']['supplier'], automatic,
+                                                 document['supplier_availability'])
+    changed = [p for p in automatic if current[p.code]['label'] != labels[p.code]]
+    if changed and document.get('staging') and 'automatic_availability_labels' not in document:
+        # An old staged journal can still prove an operator's override against
+        # the same saved draft and matching supplier identity/leaf text.
+        from inventory_hub.services.product_import import assert_snapshot
+        draft = await assert_snapshot(db, document['staging'])
+        manual = {(row['id'], row['values']['supplier_code'], row['values']['availability'])
+                  for row in draft.document['rows'] if 'availability' in row.get('manual_fields', [])}
+        changed = [p for p in changed if (p.id, p.code, labels[p.code]) not in manual]
+    if changed:
+        raise CatalogError('import_source_availability_changed',
+                           'Supplier availability changed; prepare a new import preview', 409)
+    return min((decision['expires_at'] for code, decision in current.items()
+                if decision['label'] == labels[code] and decision['label'] != document['supplier_availability']['unknown']
+                and decision['expires_at']),
+               default=None)
 
 
 def _path(shop: str, preview_id: str) -> Path:
@@ -544,6 +592,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
         for key, common in known_ai_fields.items():
             meta_common.setdefault(key, common)
     policy = availability_policy(request.supplier, supplier_cfg)
+    resolved_availability = await resolve_catalog_availability(db, request.supplier, products, policy)
     supplier_meta = None
     if supplier_cfg.get("name"):
         from inventory_hub.services.catalog_supplier_meta import prepare_meta, attach_meta
@@ -551,7 +600,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
     for item in items:
         if item.status == "ready":
             item.payload["categories"] = category_chain(remote["categories"], options.category_code)
-            apply_availability(item.payload, [p for p in products if p.id in item.product_ids], policy)
+            apply_availability(item.payload, [p for p in products if p.id in item.product_ids], policy, resolved_availability)
             if staging:
                 from inventory_hub.services.product_import import overlay_payload
                 overlay_payload(item, staging["rows"], options.language, remote["categories"])
@@ -624,17 +673,22 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
             if source:
                 item.shop_url = item.shop_url or source.shop_url
                 item.shop_admin_url = item.shop_admin_url or source.shop_admin_url
+    manual = {row['id'] for row in (staging or {}).get('rows', []) if 'availability' in row.get('manual_fields', [])}
+    automatic = {sources[id].code for item in items if item.status == 'ready' for id in item.product_ids if id not in manual}
+    labels = {code: resolved_availability[code]['label'] for code in automatic}
+    deadlines = [resolved_availability[code]['expires_at'] for code in automatic
+                 if labels[code] != policy['unknown'] and resolved_availability[code]['expires_at'] is not None]
     created = now()
     preview = ShopImportPreview(preview_id=uuid4().hex, shop=shop, supplier=request.supplier,
-                                created_at=created, expires_at=min([created + timedelta(hours=1)] + [p.supplier_observation_expires_at
-                                    for p in products if p.supplier == "husky" and p.supplier_observation_expires_at
-                                    and p.supplier_observation_expires_at > created]),
+                                created_at=created, expires_at=min([created + timedelta(hours=1), *deadlines]),
                                 options=options, prices_with_vat=remote["prices_with_vat"], items=items, errors=errors,
                                 create_validation_field=remote["create_validation_field"], shop_check=shop_check,
                                 price_lines=price_lines, sale_price_overrides=request.sale_price_overrides)
     document = {"preview": preview.model_dump(mode="json"), "sources": [p.model_dump(mode="json") for p in products],
                 "target": _target(cfg), "prices_with_vat": remote["prices_with_vat"],
-                "supplier_availability": policy, "result": None}
+                "supplier_availability": policy, "automatic_availability_labels": labels, "result": None}
+    if deadlines:
+        document['supplier_availability_expires_at'] = min(deadlines).isoformat()
     if supplier_meta:
         document["supplier_meta"] = supplier_meta
     if staging:
@@ -875,6 +929,27 @@ def _assert_payload(payload: dict, *, expected_active: bool = False) -> None:
         raise CatalogError("unsafe_import_payload", "Product visibility differs from the approved import policy", 422)
 
 
+async def assert_queue_availability(db, shop, preview_id, *, retry_failed=False):
+    """Check the target before scheduling fresh writes; earlier uncertain POSTs need readback."""
+    document = _load_job(_path(shop, preview_id))
+    preview, result = document['preview'], document['result']
+    if result and (result['status'] in ('queued', 'running') or not retry_failed
+                   or any(item['status'] == 'uncertain' for item in result['items'])):
+        return
+    pending = {id for item in (result or preview)['items'] if item['status'] in ('ready', 'failed')
+               for id in item['product_ids']}
+    if not pending:
+        return
+    from inventory_hub.services.product_import_source import assert_current_availability
+    assert_supplier_availability(preview['supplier'], document.get('supplier_availability'))
+    await assert_current_availability(db, document.get('staging'))
+    sources = {p['id']: CatalogProduct.model_validate(p) for p in document['sources']}
+    deadline = await _assert_current_stock(db, document, [sources[id] for id in pending], _automatic_labels(document, sources))
+    _assert_stock_deadline(document, deadline)
+    if now() >= datetime.fromisoformat(preview['expires_at']):
+        raise CatalogError('preview_expired', 'Create a fresh import preview', 409)
+
+
 def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, staging_id: str | None = None) -> tuple[dict, bool]:
     path = _path(shop, preview_id)
     linked = _load(path).get("staging")
@@ -890,6 +965,8 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, stag
         preview, result = document["preview"], document["result"]
         if result and result["status"] in ("queued", "running") and (now() - datetime.fromisoformat(result["updated_at"])).total_seconds() < 30:
             return result, False
+        if result and result['items'] and all(item['status'] in ('created', 'exists') for item in result['items']):
+            return result, False
         if result and result["status"] == "completed" and not retry_failed:
             return result, False
         if result and result["status"] == "failed" and not retry_failed:
@@ -898,12 +975,14 @@ def queue_import(shop: str, preview_id: str, retry_failed: bool = False, *, stag
             raise CatalogError("preview_invalid", "Resolve the preview errors first", 422)
         if document["target"] != _target(shop_config(shop)):
             raise CatalogError("shop_target_changed", "The shop connection changed; create a new preview", 409)
-        if not (result and any(item["status"] == "uncertain" for item in result["items"])):
+        reconciling = result and any(item["status"] == "uncertain" for item in result["items"])
+        only_existing = preview["items"] and all(item["status"] == "exists" for item in preview["items"])
+        if not reconciling and not only_existing:
             assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
-        # Expired previews may only reconcile previously sent items; they never create more products.
-        expired = now() > datetime.fromisoformat(preview["expires_at"])
-        if expired and not (result and any(item["status"] == "uncertain" for item in result["items"])):
-            raise CatalogError("preview_expired", "Create a fresh import preview", 409)
+            from inventory_hub.services.product_import_source import assert_availability_fresh
+            assert_availability_fresh(document)
+            if now() >= datetime.fromisoformat(preview["expires_at"]):
+                raise CatalogError("preview_expired", "Create a fresh import preview", 409)
         if result is None:
             result = {"preview_id": preview_id, "shop": shop, "options": preview["options"],
                       "prices_with_vat": document["prices_with_vat"], "status": "queued", "items": preview["items"], "errors": [], "updated_at": now().isoformat()}
@@ -968,19 +1047,24 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
     preview, result = document["preview"], document["result"]
     if document["target"] != _target(shop_config(shop)):
         raise CatalogError("shop_target_changed", "The shop connection changed", 409)
-    policy_current = True
-    from inventory_hub.services.product_import_source import assert_availability_fresh, assert_current_availability
+    sources = {p["id"]: CatalogProduct.model_validate(p) for p in document["sources"]}
+    labels = _automatic_labels(document, sources)
+    pending = [sources[id] for item in result['items'] if item['status'] in ('ready', 'failed') for id in item['product_ids']]
+    policy_current = bool(pending)
+    blocked = None
+    from inventory_hub.services.product_import_source import assert_current_availability
     try:
         assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
         async with get_session_context() as db:
             await assert_current_availability(db, document.get('staging'))
-    except CatalogError:
+            current_deadline = await _assert_current_stock(db, document, pending, labels)
+    except CatalogError as error:
         # Old/changed previews may still reconcile an uncertain POST, but must
         # never create more products or auxiliary metadata with stale settings.
         if not any(item["status"] == "uncertain" for item in result["items"]):
             raise
         policy_current = False
-    sources = {p["id"]: CatalogProduct.model_validate(p) for p in document["sources"]}
+        blocked = error.code
     client = UpgatesClient.from_shop(shop)
     remote_options = await asyncio.to_thread(cached_import_options, shop, client, refresh=True)
     options = preview["options"]
@@ -992,7 +1076,7 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
     if policy_current and remote_options["create_validation_field"]:
         if not preview["create_validation_field"]:
             raise CatalogError("shop_options_changed", "The validation field changed; create a new preview", 409)
-        assert_availability_fresh(document.get('staging'))
+        _assert_stock_deadline(document, current_deadline)
         try:
             await asyncio.to_thread(client.post, "metas", {"metas": [{"key": "validation_required", "category": "products",
                 "type": "checkbox", "label": "Vyžaduje kontrolu", "active": True, "common_languages_value_yn": True}]})
@@ -1008,11 +1092,11 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
         for item in preview["items"] for description in item["payload"].get("descriptions", []))
     if policy_current and has_content and (document.get("content_approval") or staged_h1):
         from inventory_hub.services.ai_content_upgates import content_fields
-        assert_availability_fresh(document.get('staging'))
+        _assert_stock_deadline(document, current_deadline)
         await asyncio.to_thread(content_fields, shop, client, create=True)
     if policy_current and document.get("supplier_meta"):
         from inventory_hub.services.catalog_supplier_meta import prepare_meta
-        assert_availability_fresh(document.get('staging'))
+        _assert_stock_deadline(document, current_deadline)
         supplier_name = supplier_config(preview["supplier"]).get("name")
         current_meta = await asyncio.to_thread(prepare_meta, shop, client, supplier_name, options["language"], create=True)
         if current_meta != document["supplier_meta"]:
@@ -1032,7 +1116,11 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     item["errors"] = ["import_outcome_unknown"]
                     continue
             else:
+                if blocked:
+                    item.update(status="failed", errors=[blocked])
+                    continue
                 assert_supplier_availability(preview["supplier"], document.get("supplier_availability"))
+                _assert_stock_deadline(document)
                 if now() > datetime.fromisoformat(preview["expires_at"]):
                     item.update(status="failed", errors=["preview_expired"])
                     continue
@@ -1098,10 +1186,17 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
                     if await shared_product_ids(db, set(local.values())):
                         raise CatalogError('shared_stock_sale_requires_group_workflow',
                                            'Shared sale identities require the reviewed sale group workflow', 409)
-                    assert_availability_fresh(document.get('staging'))
+                    item_deadline = await _assert_current_stock(db, document, selected, labels)
+                    _assert_stock_deadline(document, item_deadline)
+                    previous_attempt = item.get('product_write_attempted')
                     item.update(status="uncertain", errors=["import_outcome_unknown"], product_write_attempted=True)
                     result["updated_at"] = now().isoformat()
                     _item_checkpoint(path, result, item)
+                try:
+                    _assert_stock_deadline(document, item_deadline)
+                except CatalogError:
+                    item.update(status="failed", product_write_attempted=previous_attempt)
+                    raise
                 rejected = None
                 try:
                     response = await asyncio.to_thread(client.post, "products", {"products": [item["payload"]]})
@@ -1136,3 +1231,20 @@ async def _execute_items(shop: str, path: Path, document: dict) -> None:
             result["updated_at"] = now().isoformat()
             _item_checkpoint(path, result, item)
     result["status"] = "completed"
+
+
+CREATION_AVAILABILITY_ERRORS = frozenset({
+    'import_source_availability_expired', 'import_source_availability_changed', 'supplier_availability_changed',
+})
+
+
+def replaceable_availability_errors(result):
+    """Return terminal availability errors only if every product is proven untouched."""
+    if not result or result['status'] not in ('failed', 'completed') or not result['items']:
+        return None
+    errors = list(result.get('errors', []))
+    for item in result['items']:
+        if item.get('product_write_attempted') is not False or item['status'] not in ('ready', 'failed', 'exists'):
+            return None
+        errors.extend(item.get('errors', []))
+    return errors if all(code in CREATION_AVAILABILITY_ERRORS for code in errors) else None
