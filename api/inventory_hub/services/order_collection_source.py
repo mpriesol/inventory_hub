@@ -104,8 +104,10 @@ def _entry(raw, *, created_from: datetime, changed_from: datetime, created_to: d
         raise _invalid("created_window")
     if updated_at < created_at:
         raise _invalid("update_before_creation")
+    # Upgates may include older changes despite last_update_time_from.
+    # Keep scanning every reported page, but do not persist out-of-window rows.
     if updated_at < changed_from:
-        raise _invalid("updated_window")
+        return None
     # Deletion membership is established by the query. GET order objects do
     # not promise a deletion flag, but an explicitly contradictory flag is bad.
     for field in ("deleted_yn", "deleted"):
@@ -119,14 +121,15 @@ def _entry(raw, *, created_from: datetime, changed_from: datetime, created_to: d
 def _normalize_page(payload, *, created_from: datetime, changed_from: datetime, created_to: datetime,
                     page: int, deleted: bool) -> dict:
     rows, pages, count = _metadata(payload, page)
-    entries = [_entry(row, created_from=created_from, changed_from=changed_from,
-                      created_to=created_to, deleted=deleted) for row in rows]
+    projected = [_entry(row, created_from=created_from, changed_from=changed_from,
+                        created_to=created_to, deleted=deleted) for row in rows]
+    entries = [entry for entry in projected if entry is not None]
     if len({entry["order_number"] for entry in entries}) != len(entries) or len({entry["uuid"] for entry in entries}) != len(entries):
         raise _invalid("duplicate_identity")
     times = [datetime.fromisoformat(entry["updated_at"]) for entry in entries]
     if times != sorted(times):
         raise _invalid("ordering")
-    return {"entries": entries, "page": page, "number_of_pages": pages, "number_of_items": count,
+    return {"entries": entries, "raw_count": len(rows), "page": page, "number_of_pages": pages, "number_of_items": count,
             "has_more": page < pages}
 
 
