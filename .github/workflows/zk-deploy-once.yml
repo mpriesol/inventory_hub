@@ -1,0 +1,219 @@
+name: ZK deployment preflight (read only)
+
+on:
+  push:
+    branches: ["codex/zk-deploy-20261122"]
+
+permissions:
+  contents: read
+
+# Share the release lock without cancelling or starting a Hub release.
+concurrency:
+  group: inventory-hub-production
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.repository == 'mpriesol/inventory_hub' && github.event_name == 'push' && github.ref == 'refs/heads/codex/zk-deploy-20261122'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Inspect the existing ZK stack without changing it
+        shell: bash
+        env:
+          GITHUB: 'true'
+          INPUT_HOST: ${{ secrets.DEPLOY_HOST }}
+          INPUT_USERNAME: ${{ secrets.DEPLOY_USER }}
+          INPUT_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          INPUT_TIMEOUT: 30s
+          INPUT_COMMAND_TIMEOUT: 5m
+          INPUT_SCRIPT: |
+            bash -se <<'ZK_PREFLIGHT'
+            set -euo pipefail
+            export GIT_OPTIONAL_LOCKS=0
+            fail() { printf 'ZK_PREFLIGHT_ERROR=%s\n' "$1" >&2; exit 1; }
+            report() { printf 'ZK_PREFLIGHT_%s=%s\n' "$1" "$2"; }
+            report MODE read-only
+            report TARGET_COMMIT 6b43fcc685f37e513ae5638f82a13101691641ff
+            report DEPLOY_UID "$(id -u)"
+            report DEPLOY_GID "$(id -g)"
+            sudo_available=false
+            if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+              sudo_available=true
+            fi
+            report SUDO_N_AVAILABLE "$sudo_available"
+
+            [ -d /opt/cestou-zimy/.git ] || fail missing-existing-zk-checkout
+            cd /opt/cestou-zimy
+            [ "$(pwd -P)" = /opt/cestou-zimy ] || fail unexpected-checkout-path
+            [ -f zk.env ] && [ -f docker-compose.yml ] || fail missing-existing-zk-config
+            # Never print a remote URL: a locally configured URL could contain credentials.
+            case "$(git remote get-url origin 2>/dev/null)" in
+              https://github.com/mpriesol/zk|https://github.com/mpriesol/zk.git|git@github.com:mpriesol/zk|git@github.com:mpriesol/zk.git|ssh://git@github.com/mpriesol/zk|ssh://git@github.com/mpriesol/zk.git) ;;
+              *) fail unexpected-zk-repository ;;
+            esac
+            report REPOSITORY_VERIFIED true
+            report CHECKOUT_COMMIT "$(git rev-parse --verify HEAD)"
+            checkout_clean=false
+            if [ -z "$(git status --porcelain 2>/dev/null)" ]; then checkout_clean=true; fi
+            report CHECKOUT_CLEAN "$checkout_clean"
+            docker compose --env-file zk.env -p cestou-zimy config --quiet >/dev/null 2>&1 || fail compose-config-invalid
+            report COMPOSE_CONFIG_VALID true
+            docker compose version --short
+            container_id="$(docker compose --env-file zk.env -p cestou-zimy ps -q zk-app 2>/dev/null)"
+            [[ "$container_id" =~ ^[a-f0-9]{12,64}$ ]] || fail expected-one-running-zk-container
+            project="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container_id")"
+            service="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")"
+            workdir="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$container_id")"
+            config_files="$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$container_id")"
+            [ "$project" = cestou-zimy ] || fail unexpected-compose-project
+            [ "$service" = zk-app ] || fail unexpected-compose-service
+            [ "$workdir" = /opt/cestou-zimy ] || fail unexpected-compose-working-directory
+            [ "$config_files" = /opt/cestou-zimy/docker-compose.yml ] || fail unexpected-compose-overrides
+            report PROJECT "$project"
+            report SERVICE "$service"
+            report CONTAINER_ID "$container_id"
+            report RUNNING_IMAGE_ID "$(docker inspect --format '{{.Image}}' "$container_id")"
+            report RUNNING_IMAGE_TAG "$(docker inspect --format '{{.Config.Image}}' "$container_id")"
+            report IMAGE_REVISION_LABEL "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$container_id")"
+            report CONTAINER_STATUS "$(docker inspect --format '{{.State.Status}}' "$container_id")"
+            report CONTAINER_HEALTH "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}unavailable{{end}}' "$container_id")"
+            [ "$(docker inspect --format '{{.State.Running}}' "$container_id")" = true ] || fail zk-container-not-running
+            data_mount="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}:{{.Name}}{{end}}{{end}}' "$container_id")"
+            [ "$data_mount" = volume:cestou-zimy_zk_data ] || fail unexpected-zk-data-volume
+            report DATA_VOLUME cestou-zimy_zk_data
+            data_source="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$container_id")"
+            network_aliases="$(docker inspect --format '{{with index .NetworkSettings.Networks "inventory-hub-net"}}{{range .Aliases}}{{println .}}{{end}}{{end}}' "$container_id")"
+            printf '%s\n' "$network_aliases" | grep -qx zk-app || fail missing-zk-network-alias
+            report NETWORK_ALIAS_VERIFIED true
+
+            # Read only these four runtime variables. Never dump Docker Env or zk.env.
+            docker exec -i "$container_id" node --input-type=module - <<'ZK_NODE'
+            import { DatabaseSync } from 'node:sqlite';
+            import { readFileSync } from 'node:fs';
+            const report = (key, value) => console.log(`ZK_PREFLIGHT_${key}=${JSON.stringify(value)}`);
+            const appUrl = process.env.APP_URL;
+            const courseId = process.env.COURSE_ID || 'cestou-zimy';
+            const databasePath = process.env.DATABASE_PATH;
+            const backupMode = process.env.BACKUP_SCHEDULER || 'unset-in-existing-runtime';
+            if (appUrl !== 'https://hub.biketrek.sk/zk' || databasePath !== '/data/cestou-zimy.sqlite' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(courseId) || !['internal', 'external', 'off', 'unset-in-existing-runtime'].includes(backupMode)) {
+              console.error('ZK_PREFLIGHT_ERROR=unexpected-runtime-identity');
+              process.exit(1);
+            }
+            report('APP_URL', appUrl);
+            report('COURSE_ID', courseId);
+            report('DATABASE_PATH', databasePath);
+            report('BACKUP_SCHEDULER', backupMode);
+            report('NODE_VERSION', process.version);
+            const pkg = JSON.parse(readFileSync('/app/package.json', 'utf8'));
+            if (pkg.name !== 'cestou-zimy' || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?$/.test(pkg.version)) {
+              console.error('ZK_PREFLIGHT_ERROR=unexpected-runtime-package');
+              process.exit(1);
+            }
+            report('APP_PACKAGE_VERSION', pkg.version);
+            let db;
+            let integrity = false;
+            try {
+              db = new DatabaseSync(databasePath, { readOnly: true, timeout: 10000 });
+              db.exec('PRAGMA query_only=ON');
+              integrity = db.prepare('PRAGMA integrity_check').all().every(row => row.integrity_check === 'ok');
+            } catch {
+              // Do not expose SQLite exception details or any database row.
+            } finally {
+              db?.close();
+            }
+            report('SQLITE_INTEGRITY_OK', integrity);
+            let healthy = false;
+            try {
+              const response = await fetch('http://127.0.0.1:3000/healthz', { signal: AbortSignal.timeout(5000) });
+              healthy = response.ok && (await response.json()).ok === true;
+            } catch {}
+            report('INTERNAL_HEALTH_OK', healthy);
+            if (!integrity || !healthy) process.exitCode = 1;
+            ZK_NODE
+
+            # A Git checkout SHA alone does not identify an already-running image.
+            # Compare source hashes without printing code or reading runtime secrets.
+            runtime_matches_checkout=true
+            for source_file in server/start.ts lib/server.ts package.json; do
+              checkout_hash="$(git show "HEAD:$source_file" | sha256sum | cut -d ' ' -f 1)"
+              runtime_hash="$(docker exec "$container_id" node -e 'const {readFileSync}=require("node:fs"); const {createHash}=require("node:crypto"); process.stdout.write(createHash("sha256").update(readFileSync("/app/"+process.argv[1])).digest("hex"));' "$source_file")"
+              if [ "$checkout_hash" != "$runtime_hash" ]; then runtime_matches_checkout=false; fi
+            done
+            report RUNTIME_SOURCES_MATCH_CHECKOUT "$runtime_matches_checkout"
+
+            # Select one non-secret host setting without sourcing or printing zk.env.
+            backup_path="$(awk -F= '$1 == "BACKUP_HOST_PATH" { value=substr($0,index($0,"=")+1); sub(/\r$/, "", value) } END { print value }' zk.env)"
+            backup_path="${backup_path:-/srv/cestou-zimy-backups}"
+            [[ "$backup_path" =~ ^/[a-zA-Z0-9_./-]+$ ]] || fail invalid-backup-host-path
+            backup_path="$(realpath -m -- "$backup_path")"
+            case "$backup_path/" in "$data_source/"*) fail backup-path-inside-live-data-volume ;; esac
+            report BACKUP_HOST_PATH "$backup_path"
+            report BACKUP_OUTSIDE_DATA_VOLUME true
+            if [ -d "$backup_path" ]; then
+              report BACKUP_DIRECTORY_EXISTS true
+              report BACKUP_UID "$(stat -c %u -- "$backup_path")"
+              report BACKUP_GID "$(stat -c %g -- "$backup_path")"
+              report BACKUP_MODE "$(stat -c %a -- "$backup_path")"
+            else
+              report BACKUP_DIRECTORY_EXISTS false
+            fi
+            if [ -d /srv ]; then
+              report SRV_UID "$(stat -c %u /srv)"
+              report SRV_GID "$(stat -c %g /srv)"
+              report SRV_MODE "$(stat -c %a /srv)"
+            fi
+            disk_parent="$backup_path"
+            while [ ! -d "$disk_parent" ]; do disk_parent="$(dirname -- "$disk_parent")"; done
+            report CHECKOUT_DISK_AVAILABLE_KIB "$(df -Pk /opt/cestou-zimy | awk 'NR==2 {print $4}')"
+            report BACKUP_DISK_AVAILABLE_KIB "$(df -Pk "$disk_parent" | awk 'NR==2 {print $4}')"
+
+            # Report candidate existence only, never crontab lines, unit contents,
+            # environment values or job arguments. Nonstandard scheduler names
+            # remain an operator review item; a negative match is not a guarantee.
+            cron_match() {
+              awk '/^[[:space:]]*#/ {next} { line=tolower($0); if (line ~ /(cestou-zimy|zk-app|zk[-_.]?backup|backup[-_.]?zk)/ && line ~ /(backup|snapshot|sqlite)/) found=1 } END {exit !found}'
+            }
+            cron_available=false
+            user_cron=false
+            root_cron=false
+            system_cron=false
+            timer_candidate=false
+            if command -v crontab >/dev/null 2>&1; then
+              cron_available=true
+              if crontab -l 2>/dev/null | cron_match; then user_cron=true; fi
+              if [ "$(id -u)" = 0 ]; then
+                root_cron="$user_cron"
+              elif [ "$sudo_available" = true ]; then
+                if sudo -n crontab -l 2>/dev/null | cron_match; then root_cron=true; fi
+              fi
+            fi
+            for cron_file in /etc/crontab /etc/cron.d/* /etc/cron.daily/* /etc/cron.hourly/*; do
+              if [ -f "$cron_file" ] && [ -r "$cron_file" ] && cron_match < "$cron_file"; then system_cron=true; fi
+            done
+            timer_query_available=false
+            if command -v systemctl >/dev/null 2>&1; then
+              if systemctl list-unit-files --type=timer --no-legend --no-pager >/dev/null 2>&1; then
+                timer_query_available=true
+                if systemctl list-unit-files --type=timer --no-legend --no-pager 2>/dev/null | cron_match; then timer_candidate=true; fi
+              fi
+            fi
+            external_marker=false
+            if [ -f "$backup_path/.external-scheduler" ]; then external_marker=true; fi
+            report CRONTAB_QUERY_AVAILABLE "$cron_available"
+            report EXTERNAL_USER_CRON_CANDIDATE "$user_cron"
+            report EXTERNAL_ROOT_CRON_CANDIDATE "$root_cron"
+            report EXTERNAL_SYSTEM_CRON_CANDIDATE "$system_cron"
+            report SYSTEMD_TIMER_QUERY_AVAILABLE "$timer_query_available"
+            report EXTERNAL_SYSTEMD_TIMER_CANDIDATE "$timer_candidate"
+            report EXTERNAL_SCHEDULER_MARKER "$external_marker"
+            report SCHEDULER_NAME_SCAN_EXHAUSTIVE false
+            report READ_ONLY_PREFLIGHT_COMPLETE true
+            ZK_PREFLIGHT
+        run: |
+          docker run --rm --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges \
+            --env GITHUB --env INPUT_HOST --env INPUT_USERNAME \
+            --env INPUT_KEY --env INPUT_TIMEOUT --env INPUT_COMMAND_TIMEOUT \
+            --env INPUT_SCRIPT \
+            ghcr.io/appleboy/drone-ssh:1.8.0@sha256:cd14570676f022faf800e7a92ef26025fcb834e0943c199b6a6aa8d8802e383f
