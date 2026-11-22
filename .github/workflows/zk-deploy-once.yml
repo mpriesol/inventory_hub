@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Back up, migrate and deploy the approved ZK release
+      - name: Verify previous snapshot and deploy with isolated script input
         shell: bash
         env:
           GITHUB: 'true'
@@ -28,7 +28,41 @@ jobs:
           INPUT_TIMEOUT: 30s
           INPUT_COMMAND_TIMEOUT: 30m
           INPUT_SCRIPT: |
-            bash -se <<'ZK_UPDATE'
+            bash -se <<'ZK_WRAPPER'
+            set -euo pipefail
+            ZK_PREVIOUS=$(python3 - <<'PY_PREVIOUS'
+            from pathlib import Path
+            import re
+            items=[p for p in Path('/opt/cestou-zimy/.data').glob('deploy-*') if re.fullmatch(r'deploy-\d{8}T\d{6}Z-\d+',p.name) and p.is_dir() and not p.is_symlink()]
+            if not items: raise SystemExit('zk-diagnose error=no_previous_operation')
+            p=sorted(items,key=lambda p:p.name)[-1]
+            if p.stat().st_uid!=1001: raise SystemExit('zk-diagnose error=unexpected_operation_owner')
+            print(p)
+            PY_PREVIOUS
+            )
+            python3 - "$ZK_PREVIOUS" <<'PY_LOG'
+            from pathlib import Path
+            import sys,re
+            text=(Path(sys.argv[1])/'backup-before.log').read_text()
+            if 'Overená záloha databázy a fotografií:' not in text:
+             codes=sorted(set(re.findall(r'\b(?:EACCES|EROFS|ENOENT|ENOSPC|ENOMEM|ERR_[A-Z_]+|SQLITE_[A-Z_]+)\b',text)))
+             print('zk-diagnose backup_completed=false error_codes='+','.join(codes))
+             raise SystemExit(1)
+            print('zk-diagnose previous_backup_completed=true')
+            PY_LOG
+            ZK_PREVIOUS_NAME=$(basename "$ZK_PREVIOUS")-before.sqlite
+            docker run --rm --network none --read-only --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges:true \
+              --mount type=bind,source=/srv/cestou-zimy-backups,target=/backups,readonly \
+              --entrypoint node sha256:e3c738cbffbba269982576fc5d722cf785b229ede24c963dd75faafb9d8158d4 \
+              -e 'const fs=require("node:fs"),crypto=require("node:crypto"),name=process.argv[1]; if(!/^deploy-\d{8}T\d{6}Z-\d+-before\.sqlite$/.test(name))throw Error("invalid_snapshot_name"); const p="/backups/"+name,m=JSON.parse(fs.readFileSync(p+".manifest.json","utf8")),hash=p=>crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");if(m.version!==1||m.database!==name||m.databaseSha256!==hash(p)||!Array.isArray(m.media))throw Error("snapshot_manifest_mismatch");for(const a of m.media){if(!/^[a-f0-9-]{36}\.webp$/.test(a.storageName)||hash(p+".assets/"+a.storageName)!==a.sha256)throw Error("snapshot_asset_mismatch");}console.log("zk-diagnose previous_backup_bundle_verified=true");' "$ZK_PREVIOUS_NAME"
+            ZK_CURRENT=$(docker ps --filter label=com.docker.compose.project=cestou-zimy --filter label=com.docker.compose.service=zk-app --format '{{.ID}}')
+            [[ "$ZK_CURRENT" =~ ^[a-f0-9]{12,64}$ ]]
+            docker exec "$ZK_CURRENT" node -e 'const {DatabaseSync}=require("node:sqlite"),db=new DatabaseSync(process.env.DATABASE_PATH,{readOnly:true});try{const names=db.prepare("SELECT name FROM __app_migrations ORDER BY name").all().map(r=>r.name);if(JSON.stringify(names)!==JSON.stringify(["0000_certain_nightmare.sql","0001_wandering_thanos.sql","0002_far_xorn.sql"]))throw Error("unexpected_live_migrations");console.log("zk-diagnose previous_migration_not_started=true");}finally{db.close();}'
+            # Execute from a private file with closed standard input. Docker -i must never
+            # consume the shell's remaining source; explicit Node heredocs still work.
+            ZK_SCRIPT=$(mktemp /tmp/zk-deploy.XXXXXX.sh)
+            trap 'rm -f "$ZK_SCRIPT"' EXIT
+            cat > "$ZK_SCRIPT" <<'ZK_BODY'
             #!/usr/bin/env bash
             # Reviewed owner-authorized deployment of the pinned ZK release.
             # Updates only Cestou Zimy; never edits Hub, SPS, Caddy, networks or secrets.
@@ -387,7 +421,9 @@ jobs:
             SUCCESS=1
             printf 'zk-deploy success=true approved_commit=%s backup_available=true original_rows_preserved=true volume_preserved=true secrets_preserved=true public_health=true caddy_not_restarted=true\n' "$TARGET"
             printf 'zk-deploy backup_before=%s backup_after=%s private_logs=%s\n' "$BACKUPS/$(basename "$BEFORE").manifest.json" "$BACKUPS/$(basename "$AFTER").manifest.json" "$WORK"
-            ZK_UPDATE
+            ZK_BODY
+            bash "$ZK_SCRIPT" </dev/null
+            ZK_WRAPPER
         run: |
           docker run --rm --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges \
