@@ -1,4 +1,4 @@
-name: Deploy approved ZK release
+name: Verify deployed ZK release
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Verify previous snapshot and deploy with isolated script input
+      - name: Verify deployed source and automatic daily backup
         shell: bash
         env:
           GITHUB: 'true'
@@ -26,404 +26,45 @@ jobs:
           INPUT_USERNAME: ${{ secrets.DEPLOY_USER }}
           INPUT_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           INPUT_TIMEOUT: 30s
-          INPUT_COMMAND_TIMEOUT: 30m
+          INPUT_COMMAND_TIMEOUT: 5m
           INPUT_SCRIPT: |
-            bash -se <<'ZK_WRAPPER'
-            set -euo pipefail
-            ZK_PREVIOUS=$(python3 - <<'PY_PREVIOUS'
-            from pathlib import Path
-            import re
-            items=[p for p in Path('/opt/cestou-zimy/.data').glob('deploy-*') if re.fullmatch(r'deploy-\d{8}T\d{6}Z-\d+',p.name) and p.is_dir() and not p.is_symlink()]
-            if not items: raise SystemExit('zk-diagnose error=no_previous_operation')
-            p=sorted(items,key=lambda p:p.name)[-1]
-            if p.stat().st_uid!=1001: raise SystemExit('zk-diagnose error=unexpected_operation_owner')
-            print(p)
-            PY_PREVIOUS
-            )
-            python3 - "$ZK_PREVIOUS" <<'PY_LOG'
-            from pathlib import Path
-            import sys,re
-            text=(Path(sys.argv[1])/'backup-before.log').read_text()
-            if 'Overená záloha databázy a fotografií:' not in text:
-             codes=sorted(set(re.findall(r'\b(?:EACCES|EROFS|ENOENT|ENOSPC|ENOMEM|ERR_[A-Z_]+|SQLITE_[A-Z_]+)\b',text)))
-             print('zk-diagnose backup_completed=false error_codes='+','.join(codes))
-             raise SystemExit(1)
-            print('zk-diagnose previous_backup_completed=true')
-            PY_LOG
-            ZK_PREVIOUS_NAME=$(basename "$ZK_PREVIOUS")-before.sqlite
-            docker run --rm --network none --read-only --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges:true \
-              --mount type=bind,source=/srv/cestou-zimy-backups,target=/backups,readonly \
-              --entrypoint node sha256:e3c738cbffbba269982576fc5d722cf785b229ede24c963dd75faafb9d8158d4 \
-              -e 'const fs=require("node:fs"),crypto=require("node:crypto"),name=process.argv[1]; if(!/^deploy-\d{8}T\d{6}Z-\d+-before\.sqlite$/.test(name))throw Error("invalid_snapshot_name"); const p="/backups/"+name,m=JSON.parse(fs.readFileSync(p+".manifest.json","utf8")),hash=p=>crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");if(m.version!==1||m.database!==name||m.databaseSha256!==hash(p)||!Array.isArray(m.media))throw Error("snapshot_manifest_mismatch");for(const a of m.media){if(!/^[a-f0-9-]{36}\.webp$/.test(a.storageName)||hash(p+".assets/"+a.storageName)!==a.sha256)throw Error("snapshot_asset_mismatch");}console.log("zk-diagnose previous_backup_bundle_verified=true");' "$ZK_PREVIOUS_NAME"
-            ZK_CURRENT=$(docker ps --filter label=com.docker.compose.project=cestou-zimy --filter label=com.docker.compose.service=zk-app --format '{{.ID}}')
-            [[ "$ZK_CURRENT" =~ ^[a-f0-9]{12,64}$ ]]
-            docker exec "$ZK_CURRENT" node -e 'const {DatabaseSync}=require("node:sqlite"),db=new DatabaseSync(process.env.DATABASE_PATH,{readOnly:true});try{const names=db.prepare("SELECT name FROM __app_migrations ORDER BY name").all().map(r=>r.name);if(JSON.stringify(names)!==JSON.stringify(["0000_certain_nightmare.sql","0001_wandering_thanos.sql","0002_far_xorn.sql"]))throw Error("unexpected_live_migrations");console.log("zk-diagnose previous_migration_not_started=true");}finally{db.close();}'
-            # Execute from a private file with closed standard input. Docker -i must never
-            # consume the shell's remaining source; explicit Node heredocs still work.
-            ZK_SCRIPT=$(mktemp /tmp/zk-deploy.XXXXXX.sh)
-            trap 'rm -f "$ZK_SCRIPT"' EXIT
-            cat > "$ZK_SCRIPT" <<'ZK_BODY'
+            bash -se <<'ZK_VERIFY'
             #!/usr/bin/env bash
-            # Reviewed owner-authorized deployment of the pinned ZK release.
-            # Updates only Cestou Zimy; never edits Hub, SPS, Caddy, networks or secrets.
-            set -Eeuo pipefail
-            umask 077
-            
-            APP=/opt/cestou-zimy
-            PROJECT=cestou-zimy
-            SERVICE=zk-app
-            BASE=55cb3b20c9a3ad15e110ad31394ac2488809e823
-            TARGET=6b43fcc685f37e513ae5638f82a13101691641ff
-            EXPECTED_OLD_IMAGE=sha256:e3c738cbffbba269982576fc5d722cf785b229ede24c963dd75faafb9d8158d4
-            EXPECTED_VOLUME=cestou-zimy_zk_data
-            BACKUPS=/srv/cestou-zimy-backups
-            APP_URL_EXPECTED=https://hub.biketrek.sk/zk
-            ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
-            WORK=$APP/.data/deploy-$ID
-            NEW_TAG=cestou-zimy:deploy-$ID
-            ROLLBACK_TAG=cestou-zimy:rollback-$ID
-            HELPER=$PROJECT-deploy-$ID
-            BEFORE=/backups/deploy-$ID-before.sqlite
-            AFTER=/backups/deploy-$ID-after.sqlite
-            SOURCE_CHANGED=0
-            STOPPED=0
-            SNAPSHOT_READY=0
-            MIGRATION_ATTEMPTED=0
-            PUBLIC_START_ATTEMPTED=0
-            SUCCESS=0
-            OLD_IMAGE=
-            OLD_BRANCH=
-            OLD_CID=
-            NEW_IMAGE=
-            DATA_VOLUME=
-            
-            log() { printf 'zk-deploy phase=%s\n' "$1"; }
-            die() { printf 'zk-deploy error=%s\n' "$1" >&2; exit 1; }
-            node_old() {
-              docker run --rm -i --network none --read-only --user 1000:1000 \
-                --cap-drop ALL --security-opt no-new-privileges:true \
-                --entrypoint node "$OLD_IMAGE" "$@"
-            }
-            dc() {
-              docker compose --project-directory "$APP" --env-file "$APP/zk.env" \
-                -p "$PROJECT" -f "$APP/docker-compose.yml" -f "$WORK/override.yml" "$@"
-            }
-            write_override() {
-              printf 'services:\n  zk-app:\n    image: %s\nvolumes:\n  zk_data:\n    external: true\n    name: %s\n' "$1" "$DATA_VOLUME" > "$WORK/override.yml"
-            }
-            # No application server is started by these offline helper containers.
-            db_node() {
-              local access=$1; shift
-              local data_mount="type=volume,source=$DATA_VOLUME,target=/data"
-              [[ $access != ro ]] || data_mount+=,readonly
-              docker run --rm -i --name "$HELPER" --network none --read-only \
-                --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges:true \
-                --tmpfs /tmp:size=32m,mode=1777 --memory 512m --pids-limit 128 \
-                --env-file "$WORK/helper.env" --env BACKUP_SCHEDULER=off \
-                --mount "$data_mount" \
-                --mount "type=bind,source=$BACKUPS,target=/backups" \
-                --entrypoint node "$NEW_IMAGE" "$@"
-            }
-            assert_no_writer() {
-              local writers
-              writers=$(docker ps --filter "volume=$DATA_VOLUME" --format '{{.ID}}') || die cannot_verify_data_volume_writers
-              [[ -z $writers ]] || die other_running_data_volume_writer
-            }
-            health_wait() {
-              local cid=$1 state
-              for ((i=0; i<40; i++)); do
-                state=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid") || return 1
-                [[ $state != healthy ]] || return 0
-                [[ $state != unhealthy ]] || return 1
-                sleep 3
-              done
-              return 1
-            }
-            finish() {
-              local code=$?
-              trap - EXIT INT TERM HUP
-              [[ $SUCCESS != 1 ]] || exit 0
-              [[ $code != 0 ]] || code=1
-              printf 'zk-deploy failed stopped=%s snapshot=%s migration_attempted=%s public_start_attempted=%s\n' \
-                "$STOPPED" "$SNAPSHOT_READY" "$MIGRATION_ATTEMPTED" "$PUBLIC_START_ATTEMPTED" >&2
-              if [[ $PUBLIC_START_ATTEMPTED == 1 ]]; then
-                # Even a failed compose up may have accepted writes or drained the outbox.
-                log failed_after_public_start_current_data_preserved_no_automatic_restore
-                exit "$code"
-              fi
-              # Only this deployment's isolated helper may still be running after a signal.
-              docker rm -f "$HELPER" >/dev/null 2>&1 || true
-              if [[ $STOPPED == 1 ]]; then
-                local writers
-                if ! writers=$(docker ps --filter "volume=$DATA_VOLUME" --format '{{.ID}}'); then
-                  log rollback_blocked_cannot_verify_writers
-                  exit "$code"
-                fi
-                if [[ -n $writers ]]; then
-                  log rollback_blocked_by_running_writer
-                  exit "$code"
-                fi
-                if [[ $MIGRATION_ATTEMPTED == 1 ]]; then
-                  if [[ $SNAPSHOT_READY != 1 ]] || ! db_node rw scripts/restore.mjs "$BEFORE" --confirm-stopped > "$WORK/restore.log" 2>&1; then
-                    log rollback_restore_failed_service_left_stopped
-                    exit "$code"
-                  fi
-                  log rollback_snapshot_restored
-                fi
-              fi
-              if [[ $SOURCE_CHANGED == 1 ]]; then
-                if [[ -n $OLD_BRANCH ]]; then
-                  [[ $(git -C "$APP" rev-parse "refs/heads/$OLD_BRANCH") == "$BASE" ]] || { log rollback_branch_moved_service_state_preserved; exit "$code"; }
-                  git -C "$APP" checkout --quiet "$OLD_BRANCH" || { log rollback_source_failed; exit "$code"; }
-                else
-                  git -C "$APP" checkout --quiet --detach "$BASE" || { log rollback_source_failed; exit "$code"; }
-                fi
-              fi
-              # Checkout restores tracked Compose configuration. This deployment never edits
-              # zk.env, so never overwrite a concurrent operator change with our saved copy.
-              if [[ $STOPPED == 1 ]]; then
-                if [[ $(sha256sum "$APP/zk.env" | cut -d ' ' -f 1) != "$ENV_HASH" ]]; then
-                  log rollback_env_changed_service_left_stopped_original_env_saved
-                  exit "$code"
-                fi
-                write_override "$ROLLBACK_TAG"
-                if ! dc up -d --no-deps --no-build --pull never "$SERVICE" > "$WORK/rollback-up.log" 2>&1; then
-                  log rollback_start_failed
-                  exit "$code"
-                fi
-                local cid
-                cid=$(dc ps -q "$SERVICE")
-                health_wait "$cid" || { log rollback_health_failed; exit "$code"; }
-                log rollback_old_image_healthy_original_data_preserved
-              else
-                log old_service_left_running
-              fi
-              exit "$code"
-            }
-            
-            log preflight
-            [[ $(id -u):$(id -g) == 1001:1001 ]] || die unexpected_deploy_user
-            cd "$APP"
-            [[ $(git rev-parse HEAD) == "$BASE" ]] || die unexpected_checkout_commit
-            [[ -z $(git status --porcelain --untracked-files=normal) ]] || die checkout_not_clean
-            [[ -f zk.env && ! -L zk.env && -f docker-compose.yml && ! -L docker-compose.yml ]] || die configuration_missing_or_symlink
-            [[ $(stat -c %a zk.env) == 600 ]] || die env_permissions_not_600
-            mkdir -p "$APP/.data"
-            exec 9> "$APP/.data/deploy.lock"
-            flock -n 9 || die another_deployment_is_running
-            mkdir -m 700 "$WORK"
-            OLD_BRANCH=$(git symbolic-ref --quiet --short HEAD || true)
-            OLD_CID=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$SERVICE" --format '{{.ID}}')
-            [[ -n $OLD_CID && $OLD_CID != *$'\n'* ]] || die expected_one_live_service
-            OLD_IMAGE=$(docker inspect --format '{{.Image}}' "$OLD_CID")
-            [[ $OLD_IMAGE == "$EXPECTED_OLD_IMAGE" ]] || die unexpected_live_image
-            [[ $(docker inspect --format '{{.State.Health.Status}}' "$OLD_CID") == healthy ]] || die old_service_not_healthy
-            [[ $(docker exec "$OLD_CID" id -u):$(docker exec "$OLD_CID" id -g) == 1000:1000 ]] || die unexpected_app_user
-            [[ $(docker exec "$OLD_CID" node -p process.versions.node) == 24.22.1 ]] || die unexpected_old_node
-            DATA_VOLUME=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{if eq .Type "volume"}}{{.Name}}{{end}}{{end}}{{end}}' "$OLD_CID")
-            [[ $DATA_VOLUME == "$EXPECTED_VOLUME" ]] || die unexpected_data_volume
-            [[ $(docker inspect --format '{{range $key,$value := .NetworkSettings.Networks}}{{$key}}{{"\n"}}{{end}}' "$OLD_CID") == inventory-hub-net ]] || die unexpected_application_network
-            CADDY_CID=$(docker ps --filter label=com.docker.compose.service=caddy --filter network=inventory-hub-net --format '{{.ID}}')
-            [[ -n $CADDY_CID && $CADDY_CID != *$'\n'* ]] || die expected_one_existing_caddy
-            CADDY_STARTED=$(docker inspect --format '{{.State.StartedAt}}' "$CADDY_CID")
-            [[ $(df -Pk /srv | awk 'NR==2 {print $4}') -ge 2097152 ]] || die insufficient_free_space
-            cp docker-compose.yml "$WORK/compose.before.yml"
-            cp zk.env "$WORK/env.before"
-            chmod 600 "$WORK/compose.before.yml" "$WORK/env.before"
-            ENV_HASH=$(sha256sum zk.env | cut -d ' ' -f 1)
-            docker inspect --format '{{json .Config.Env}}' "$OLD_CID" > "$WORK/env.running.json"
-            docker tag "$OLD_IMAGE" "$ROLLBACK_TAG"
-            trap finish EXIT
-            trap 'exit 130' INT
-            trap 'exit 143' TERM
-            trap 'exit 129' HUP
-            
-            # Preflight already found no deploy-user/system/timer backup candidates.
-            # Check only the exact root crontab; do not enumerate or print other users' files.
-            if [[ -d /var/spool/cron/crontabs ]]; then
-              docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
-                --security-opt no-new-privileges:true \
-                --mount type=bind,source=/var/spool/cron/crontabs,target=/cron,readonly \
-                --entrypoint node "$OLD_IMAGE" -e '
-                  const fs=require("node:fs"); let text="";
-                  try { text=fs.readFileSync("/cron/root","utf8"); }
-                  catch(e) { if(e.code!=="ENOENT") throw e; }
-                  const found=text.split(/\r?\n/).some(l=>!/^\s*#/.test(l)&&/(cestou-zimy|zk-app|\/zk\/)/i.test(l)&&/(backup|sqlite|restic|borg)/i.test(l));
-                  if(found) { console.error("root_zk_backup_schedule_detected"); process.exit(1); }
-                ' > "$WORK/root-cron-check.log" 2>&1 || die root_backup_schedule_requires_review
-            fi
-            
-            log fetching_pinned_source
-            git fetch --quiet origin "$TARGET" > "$WORK/fetch.log" 2>&1 || die fetch_pinned_source_failed
-            git merge-base --is-ancestor "$BASE" "$TARGET" || die target_not_descendant_of_live_base
-            SOURCE_CHANGED=1
-            git -c advice.detachedHead=false checkout --quiet --detach "$TARGET"
-            [[ $(git rev-parse HEAD) == "$TARGET" ]] || die target_checkout_mismatch
-            grep -Fxq .data .dockerignore && grep -Fxq zk.env .dockerignore && grep -Fxq .env .dockerignore || die private_files_not_excluded_from_build
-            write_override "$NEW_TAG"
-            dc config --format json > "$WORK/compose.resolved.json"
-            node_old -e '
-              const fs=require("node:fs"), c=JSON.parse(fs.readFileSync(0,"utf8"));
-              if(Object.keys(c.services).join()!=="zk-app") throw Error("unexpected compose service");
-              const s=c.services["zk-app"], e=s.environment, v=s.volumes;
-              if(e.APP_URL!=="https://hub.biketrek.sk/zk"||e.DATABASE_PATH!=="/data/cestou-zimy.sqlite"||e.MEDIA_DIRECTORY!=="/data/media"||e.BACKUP_DIRECTORY!=="/backups"||e.BACKUP_SCHEDULER!=="internal") throw Error("unexpected app configuration");
-              if(s.ports?.length || !s.read_only || Object.keys(s.networks).join()!=="hubnet" || c.networks.hubnet.name!=="inventory-hub-net") throw Error("unexpected service exposure");
-              if(v.length!==2 || !v.some(x=>x.type==="volume"&&x.source==="zk_data"&&x.target==="/data") || !v.some(x=>x.type==="bind"&&x.source==="/srv/cestou-zimy-backups"&&x.target==="/backups"&&x.bind?.create_host_path===false)) throw Error("unexpected mounts");
-              if(c.volumes.zk_data.name!=="cestou-zimy_zk_data"||c.volumes.zk_data.external!==true) throw Error("unexpected data volume");
-              process.stdout.write(JSON.stringify(e)+"\n");
-            ' < "$WORK/compose.resolved.json" > "$WORK/env.next.json"
-            cat "$WORK/env.running.json" "$WORK/env.next.json" | node_old -e '
-              const fs=require("node:fs");
-              const [old,next]=fs.readFileSync(0,"utf8").trim().split("\n").map(JSON.parse);
-              const omit=new Set(["PATH","NODE_VERSION","YARN_VERSION","MEDIA_DIRECTORY","BACKUP_DIRECTORY","BACKUP_SCHEDULER","BACKUP_TIME","BACKUP_RETENTION"]);
-              const before=Object.fromEntries(old.map(x=>{const p=x.indexOf("="); return [x.slice(0,p),x.slice(p+1)];}).filter(([k])=>!omit.has(k)));
-              const after=Object.fromEntries(Object.entries(next).filter(([k])=>!omit.has(k)).map(([k,v])=>[k,String(v)]));
-              const stable=o=>JSON.stringify(Object.entries(o).sort(([a],[b])=>a.localeCompare(b)));
-              if(stable(after)!==stable(before)) throw Error("runtime_environment_changed");
-            ' > "$WORK/env-check.log" 2>&1 || die runtime_environment_changed
-            node_old -e '
-              const fs=require("node:fs"), e=JSON.parse(fs.readFileSync(0,"utf8"));
-              for(const [k,v] of Object.entries(e)) { if(!/^[A-Z_][A-Z0-9_]*$/.test(k)||/[\r\n]/.test(String(v))) throw Error("unsupported env-file value"); process.stdout.write(k+"="+v+"\n"); }
-            ' < "$WORK/env.next.json" > "$WORK/helper.env"
-            chmod 600 "$WORK/helper.env"
-            
-            # No sudo is available. Use the already-authorized Docker administration route,
-            # no privileged container, host socket, broad capabilities or other host writes.
-            docker run --rm --network none --read-only --user 0:0 --cap-drop ALL --cap-add CHOWN \
-              --security-opt no-new-privileges:true \
-              --mount type=bind,source=/srv,target=/host-srv \
-              --entrypoint node "$OLD_IMAGE" -e '
-                const fs=require("node:fs"), p="/host-srv/cestou-zimy-backups";
-                try { fs.mkdirSync(p,{mode:0o700}); fs.chmodSync(p,0o700); fs.chownSync(p,1000,1000); }
-                catch(e) { if(e.code!=="EEXIST") throw e; }
-                const s=fs.lstatSync(p); if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==1000||s.gid!==1000||(s.mode&0o777)!==0o700) throw Error("backup_directory_permissions_mismatch");
-              ' > "$WORK/backup-directory.log" 2>&1 || die backup_directory_setup_failed
-            log building_while_old_service_running
-            dc build "$SERVICE" > "$WORK/build.log" 2>&1
-            NEW_IMAGE=$(docker image inspect --format '{{.Id}}' "$NEW_TAG")
-            [[ $(docker run --rm --network none --read-only --entrypoint id "$NEW_IMAGE" -u) == 1000 ]] || die new_image_user_mismatch
-            [[ $(docker run --rm --network none --read-only --entrypoint id "$NEW_IMAGE" -g) == 1000 ]] || die new_image_group_mismatch
-            [[ $(docker run --rm --network none --read-only --entrypoint node "$NEW_IMAGE" -p 'process.versions.node.split(".")[0]') == 24 ]] || die new_image_node_mismatch
-            [[ $(sha256sum zk.env | cut -d ' ' -f 1) == "$ENV_HASH" ]] || die env_file_changed
-            [[ $(docker inspect --format '{{.State.Health.Status}}' "$OLD_CID") == healthy ]] || die old_service_failed_during_build
-            
-            log stopping_only_zk_app
-            # Set this before stop: a signal can arrive after Docker has stopped the service.
-            STOPPED=1
-            dc stop -t 30 "$SERVICE" > "$WORK/stop.log" 2>&1
-            assert_no_writer
-            log creating_offline_database_and_media_snapshot
-            # DatabaseSync opens source readOnly:true. The filesystem mount permits SQLite's
-            # WAL/SHM coordination even when a clean shutdown removed those sidecar files.
-            db_node rw scripts/backup.mjs "$BEFORE" > "$WORK/backup-before.log" 2>&1
-            SNAPSHOT_READY=1
-            log applying_offline_migrations
-            MIGRATION_ATTEMPTED=1
-            db_node rw --experimental-strip-types scripts/migrate.ts > "$WORK/migrate.log" 2>&1
-            assert_no_writer
-            
-            log verifying_original_rows_and_exact_metadata_changes
-            # Compare all original table rows projected on their original columns. The only
-            # allowed changes are the three exact metadata transformations in 0003. Values,
-            # rows, credentials and row hashes are never printed to workflow output.
-            db_node rw --input-type=module - "$BEFORE" > "$WORK/invariants.log" 2>&1 <<'NODE'
-            import {DatabaseSync} from 'node:sqlite';
-            import assert from 'node:assert/strict';
-            const before=new DatabaseSync(process.argv[2],{readOnly:true});
-            const after=new DatabaseSync('/data/cestou-zimy.sqlite',{readOnly:true});
-            const q=s=>'"'+s.replaceAll('"','""')+'"';
-            const canonical=v=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,canonical(v[k])])):v;
-            const normalized=(table,row,expected)=>{
-              const r={...row};
-              if(['courses','challenges'].includes(table)) {
-                const data=JSON.parse(r.data);
-                if(expected&&table==='courses'&&['Cestou Zimy · testovací ročník','TESTOVACÍ ROČNÍK','testovací ročník'].includes(data.name)) Object.assign(data,{name:'Cestou Zimy 2027',year:2027,eventStartDate:'2027-02-03',eventEndDate:'2027-02-07'});
-                if(expected&&table==='challenges'&&r.id===r.course_id+'-cold') Object.assign(data,{name:'Studená sprcha alebo otužovanie',kind:'cold',visual:{kind:'icon',value:'snowflake',color:'#5eb7db'}});
-                r.data=data;
-              }
-              if(expected&&table==='activity_types'&&r.id===r.course_id+'-cold'&&r.group_name==='task') r.name='Studená sprcha alebo otužovanie';
-              return JSON.stringify(canonical(r));
-            };
-            try {
-              for(const db of [before,after]) assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check,'ok','database_integrity');
-              const tables=before.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'__app_migrations' ORDER BY name").all();
-              let count=0;
-              for(const {name} of tables) {
-                const columns=before.prepare(`PRAGMA table_info(${q(name)})`).all().map(c=>q(c.name)).join(',');
-                const sql=`SELECT ${columns} FROM ${q(name)}`;
-                const original=before.prepare(sql).all().map(r=>normalized(name,r,true)).sort();
-                const current=after.prepare(sql).all().map(r=>normalized(name,r,false)).sort();
-                // Do not use assert.deepEqual: its diagnostic can print private rows.
-                if(original.length!==current.length||original.some((r,i)=>r!==current[i])) throw Error('original_table_invariant_failed:'+name);
-                count+=original.length;
-              }
-              const oldM=before.prepare('SELECT name,checksum,applied_at FROM __app_migrations ORDER BY name').all();
-              for(const m of oldM) {
-                const current=after.prepare('SELECT name,checksum,applied_at FROM __app_migrations WHERE name=?').get(m.name);
-                if(JSON.stringify(current)!==JSON.stringify(m)) throw Error('original_migration_record_changed');
-              }
-              const allM=after.prepare('SELECT name FROM __app_migrations ORDER BY name').all().map(r=>r.name);
-              const extra=allM.filter(n=>!oldM.some(m=>m.name===n));
-              assert.equal(JSON.stringify(extra),JSON.stringify(['0003_community.sql','0004_media.sql']),'unexpected_migrations');
-              const expectedCold=new Map();
-              const completions=before.prepare("SELECT id,course_id,member_id,date,note,created_at FROM completions WHERE challenge_id=course_id||'-cold' ORDER BY created_at,id").all();
-              for(const r of completions) {
-                const key=JSON.stringify([r.course_id,r.member_id,r.date]);
-                if(!expectedCold.has(key)) expectedCold.set(key,{id:'legacy-completion-'+r.id,course_id:r.course_id,member_id:r.member_id,date:r.date,kind:'shower',note:r.note,created_at:r.created_at,updated_at:r.created_at,legacy_source:'completion:'+r.id});
-              }
-              const activities=before.prepare("SELECT a.* FROM activities a JOIN activity_types t ON t.id=a.type_id AND t.course_id=a.course_id WHERE t.group_name='task' AND (t.id=t.course_id||'-cold' OR t.challenge_id=t.course_id||'-cold') ORDER BY a.created_at,a.id").all();
-              for(const r of activities) {
-                const key=JSON.stringify([r.course_id,r.member_id,r.date]);
-                if(!expectedCold.has(key)) expectedCold.set(key,{id:'legacy-activity-'+r.id,course_id:r.course_id,member_id:r.member_id,date:r.date,kind:'shower',note:r.note,created_at:r.created_at,updated_at:r.updated_at,legacy_source:'activity:'+r.id});
-              }
-              const expectedRows=[...expectedCold.values()].map(r=>JSON.stringify(canonical(r))).sort();
-              const coldRows=after.prepare('SELECT * FROM cold_entries').all().map(r=>JSON.stringify(canonical(r))).sort();
-              if(JSON.stringify(expectedRows)!==JSON.stringify(coldRows)) throw Error('cold_history_backfill_mismatch');
-              for(const name of ['media','personal_award_definitions','personal_award_grants','mottos','motto_daily','community_seed_versions','preparation_previews','preparation_guards']) assert.equal(after.prepare(`SELECT COUNT(*) n FROM ${q(name)}`).get().n,0,'unexpected_new_table_data');
-              console.log(`existing_tables_preserved=true existing_rows_preserved=true tables=${tables.length} rows=${count} cold_history_preserved=true`);
-            } finally { before.close(); after.close(); }
-            NODE
-            
-            [[ $(sha256sum zk.env | cut -d ' ' -f 1) == "$ENV_HASH" ]] || die env_file_changed
-            assert_no_writer
-            log starting_reviewed_release
-            # Boundary MUST precede up: even a command that reports failure could serve writes.
-            PUBLIC_START_ATTEMPTED=1
-            dc up -d --no-deps --no-build --pull never "$SERVICE" > "$WORK/up.log" 2>&1
-            NEW_CID=$(dc ps -q "$SERVICE")
-            [[ -n $NEW_CID && $NEW_CID != *$'\n'* ]] || die expected_one_new_service
-            [[ $(docker inspect --format '{{.Image}}' "$NEW_CID") == "$NEW_IMAGE" ]] || die running_image_mismatch
-            [[ $(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$NEW_CID") == "$DATA_VOLUME" ]] || die running_volume_mismatch
-            health_wait "$NEW_CID" || die new_service_health_failed
-            docker exec "$NEW_CID" node -e 'fetch("http://127.0.0.1:3000/healthz").then(async r=>{if(!r.ok||!(await r.json()).ok)process.exit(1)}).catch(()=>process.exit(1))'
-            log verifying_public_routes
-            curl --fail --silent --show-error --max-time 20 "$APP_URL_EXPECTED/" -o "$WORK/page.after.html"
-            docker exec "$NEW_CID" node -e 'process.stdout.write(require("node:fs").readFileSync("dist/client/index.html"))' > "$WORK/page.built.html"
-            cmp -s "$WORK/page.after.html" "$WORK/page.built.html" || die public_assets_do_not_match_release
-            [[ $(curl --silent --show-error --max-time 20 -o "$WORK/auth-options.json" -w '%{http_code}' "$APP_URL_EXPECTED/api/auth-options") == 200 ]] || die public_auth_options_failed
-            [[ $(curl --silent --show-error --max-time 20 -o "$WORK/anonymous-state.json" -w '%{http_code}' "$APP_URL_EXPECTED/api/state") == 401 ]] || die anonymous_state_not_protected
-            [[ $(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "$APP_URL_EXPECTED/navod.html") == 200 ]] || die public_guide_failed
-            [[ $(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://hub.biketrek.sk/api/health) == 200 ]] || die hub_health_failed
-            [[ $(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' https://hub.biketrek.sk/sps/healthz) == 200 ]] || die sps_health_failed
-            [[ $(docker ps --filter label=com.docker.compose.service=caddy --filter network=inventory-hub-net --format '{{.ID}}') == "$CADDY_CID" ]] || die caddy_container_changed
-            [[ $(docker inspect --format '{{.State.StartedAt}}' "$CADDY_CID") == "$CADDY_STARTED" ]] || die caddy_restarted
-            log verifying_post_update_backup
-            db_node rw scripts/backup.mjs "$AFTER" > "$WORK/backup-after.log" 2>&1
-            [[ $(git rev-parse HEAD) == "$TARGET" ]] || die final_source_mismatch
-            [[ $(sha256sum zk.env | cut -d ' ' -f 1) == "$ENV_HASH" ]] || die final_env_mismatch
-            # Preserve normal future compose up and git pull behavior, with compare-and-swap
-            # so a concurrently moved local branch is never silently overwritten.
-            docker tag "$NEW_IMAGE" cestou-zimy:local
-            if [[ -n $OLD_BRANCH ]]; then
-              git update-ref "refs/heads/$OLD_BRANCH" "$TARGET" "$BASE"
-              git checkout --quiet "$OLD_BRANCH"
-            fi
-            SUCCESS=1
-            printf 'zk-deploy success=true approved_commit=%s backup_available=true original_rows_preserved=true volume_preserved=true secrets_preserved=true public_health=true caddy_not_restarted=true\n' "$TARGET"
-            printf 'zk-deploy backup_before=%s backup_after=%s private_logs=%s\n' "$BACKUPS/$(basename "$BEFORE").manifest.json" "$BACKUPS/$(basename "$AFTER").manifest.json" "$WORK"
-            ZK_BODY
-            bash "$ZK_SCRIPT" </dev/null
-            ZK_WRAPPER
+            set -euo pipefail
+            cd /opt/cestou-zimy
+            [[ $(git rev-parse HEAD) == 6b43fcc685f37e513ae5638f82a13101691641ff ]]
+            [[ -z $(git status --porcelain --untracked-files=normal) ]]
+            ZK_CID=$(docker ps --filter label=com.docker.compose.project=cestou-zimy --filter label=com.docker.compose.service=zk-app --format '{{.ID}}')
+            [[ "$ZK_CID" =~ ^[a-f0-9]{12,64}$ ]]
+            [[ $(docker inspect --format '{{.State.Health.Status}}' "$ZK_CID") == healthy ]]
+            [[ $(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Name}}{{end}}{{end}}' "$ZK_CID") == cestou-zimy_zk_data ]]
+            [[ $(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/backups"}}{{.Type}}:{{.Source}}{{end}}{{end}}' "$ZK_CID") == bind:/srv/cestou-zimy-backups ]]
+            docker exec "$ZK_CID" node --input-type=module -e '
+            import fs from "node:fs";
+            import path from "node:path";
+            import crypto from "node:crypto";
+            import { schedulerMode } from "./server/backup-scheduler.ts";
+            const assert=(ok,code)=>{if(!ok)throw Error(code);};
+            const dir="/backups",cid=process.env.COURSE_ID||"cestou-zimy";
+            assert(schedulerMode(process.env,dir)==="internal","unexpected_scheduler");
+            assert(process.env.BACKUP_TIME==="03:15","unexpected_backup_time");
+            assert(process.env.BACKUP_RETENTION==="30","unexpected_backup_retention");
+            const s=JSON.parse(fs.readFileSync(path.join(dir,"last-status.json"),"utf8"));
+            assert(!s.lastError&&s.lastSuccess?.at,"backup_status_not_successful");
+            const daily=fs.readdirSync(dir).filter(n=>n.endsWith(".manifest.json")).map(n=>JSON.parse(fs.readFileSync(path.join(dir,n),"utf8"))).filter(m=>m.version===1&&m.reason==="daily"&&m.courseId===cid&&typeof m.database==="string"&&path.basename(m.database)===m.database).sort((a,b)=>b.createdAt.localeCompare(a.createdAt))[0];
+            assert(daily&&Array.isArray(daily.media),"daily_manifest_missing");
+            const parts=new Intl.DateTimeFormat("en-CA",{timeZone:daily.timezone,year:"numeric",month:"2-digit",day:"2-digit"}).formatToParts(new Date());
+            const val=k=>parts.find(x=>x.type===k).value;
+            const today=`${val("year")}-${val("month")}-${val("day")}`;
+            assert(daily.scheduleDate===today,"daily_snapshot_date_mismatch");
+            const file=path.join(dir,daily.database),hash=p=>crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+            assert(hash(file)===daily.databaseSha256,"daily_database_hash_mismatch");
+            assert(fs.statSync(file+".assets").isDirectory(),"daily_assets_missing");
+            for(const a of daily.media){assert(/^[a-f0-9-]{36}\.webp$/.test(a.storageName),"invalid_asset_name");assert(hash(file+".assets/"+a.storageName)===a.sha256,"daily_asset_hash_mismatch");}
+            console.log("zk-verify "+JSON.stringify({scheduler:"internal",time:process.env.BACKUP_TIME,retention:Number(process.env.BACKUP_RETENTION),lastAttemptFailed:false,lastSuccessAt:s.lastSuccess.at,lastSuccessReason:s.lastSuccess.reason,dailySnapshotVerified:true,dailyScheduleDate:daily.scheduleDate,dailyTimezone:daily.timezone}));
+            '
+            printf 'zk-verify approved_source=true checkout_clean=true health=true original_volume=true external_backup_bind=true\n'
+            ZK_VERIFY
         run: |
           docker run --rm --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges \
