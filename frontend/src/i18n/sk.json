@@ -1,4 +1,50 @@
 {
+  "supplierPreorders": {
+    "title": "Predobjednávky",
+    "detail": "Predobjednávka",
+    "add": "Pridať predobjednávku",
+    "supplier": "Dodávateľ",
+    "reference": "Číslo objednávky",
+    "orderedOn": "Dátum objednávky",
+    "line": "Položka {{number}}",
+    "card": "Skladová karta",
+    "existingCard": "Existujúca karta",
+    "newCard": "Založiť neaktívnu kartu",
+    "name": "Názov produktu",
+    "orderedQuantity": "Objednané",
+    "received": "Prijaté",
+    "remaining": "Zostáva dodať",
+    "expected": "Očakávaný termín",
+    "removeLine": "Odstrániť položku",
+    "addLine": "Pridať položku",
+    "approved": "Predobjednávka je schválená",
+    "save": "Zapísať predobjednávku",
+    "deliveries": "Potvrdené príjmy",
+    "invoices": "Súvisiace faktúry",
+    "findInvoice": "Číslo faktúry",
+    "linkInvoice": "Prepojiť faktúru",
+    "noInvoices": "Žiadne voľné faktúry pre tohto dodávateľa.",
+    "search": "Vyhľadať",
+    "searchLabel": "Číslo objednávky alebo dodávateľ",
+    "open": "Otvorená",
+    "completed": "Vybavená",
+    "status": "Stav",
+    "empty": "Žiadne predobjednávky.",
+    "productPending": "Čakáme {{quantity}} {{unit}} do {{date}}",
+    "errors": {
+      "request_failed": "Predobjednávku sa nepodarilo načítať alebo uložiť.",
+      "preorder_not_found": "Predobjednávka sa nenašla.",
+      "preorder_approval_required": "Potvrďte schválenie predobjednávky.",
+      "preorder_supplier_required": "Vyberte aktívneho dodávateľa.",
+      "preorder_reference_exists": "Dodávateľ už má predobjednávku s týmto číslom.",
+      "preorder_stock_card_required": "Zadajte presné existujúce SKU alebo založte skladovú kartu.",
+      "preorder_product_repeated": "Každá skladová karta môže byť v predobjednávke raz.",
+      "preorder_quantity_unit": "Množstvo nezodpovedá jednotke skladovej karty.",
+      "preorder_invoice_already_linked": "Faktúra už patrí inej predobjednávke.",
+      "preorder_invalid_invoice": "Vyberte nearchivovanú faktúru toho istého dodávateľa.",
+      "preorder_date_changed": "Termín sa medzitým zmenil. Načítajte predobjednávku znova."
+    }
+  },
   "atomerAvailability": {
     "title": "Synchronizácia xTrek Atomer",
     "subtitle": "Porovnanie dostupnosti a viditeľnosti s aktuálnym exportom Atomeru.",
@@ -5208,6 +5254,56 @@
     "feedTruncated": "Zobrazených je prvých 100 výsledkov. Spresnite kód alebo názov."
   },
   "invoiceArchive": {
+    "serviceDocument": "Faktúra za služby",
+    "issuer": "Vystaviteľ",
+    "isdocHelp": "ISDOC Vavrys sa pripojí k už nahratému PDF po kontrole položiek a súm.",
+    "isdocAccepted": "ISDOC pripojený k faktúre.",
+    "completeness": {
+      "title": "Kontrola úplnosti faktúr",
+      "help": "Nahrajte CSV, XLSX alebo textové PDF so stĺpcami Vystaviteľ a Číslo faktúry. Zoznam možno doplniť dátumom vystavenia, sumou a menou.",
+      "file": "Kontrolný zoznam",
+      "preview": "Náhľad riadkov",
+      "compare": "Porovnať s Hubom",
+      "failed": "Kontrolu sa nepodarilo dokončiť.",
+      "issues": {
+        "unreadable": "Nečitateľný údaj",
+        "incomplete": "Chýba vystaviteľ alebo číslo",
+        "duplicate": "Duplicitný riadok",
+        "outside_period": "Mimo obdobia",
+        "ambiguous": "Viacero zhôd",
+        "date": "Rozdielny alebo neznámy dátum",
+        "currency": "Rozdielna alebo neznáma mena",
+        "amount": "Rozdielna alebo neoveriteľná suma"
+      },
+      "found": "Nájdené",
+      "missing": "V Hube chýba",
+      "review": "Na overenie",
+      "row": "Riadok",
+      "issuer": "Vystaviteľ",
+      "number": "Číslo",
+      "date": "Dátum",
+      "amount": "Suma",
+      "reason": "Výsledok"
+    },
+    "paymentMethod": "Spôsob úhrady",
+    "paymentMethods": {
+      "cash": "Hotovosť",
+      "card_slsp": "Karta SLSP",
+      "card_tb": "Karta TB",
+      "transfer_slsp": "Prevod SLSP",
+      "transfer_tb": "Prevod TB"
+    },
+    "batchPayment": {
+      "action": "Zapísať úhradu",
+      "help": "Označené doklady: {{count}}. Pre každý sa zapíše jeho aktuálny neuhradený zostatok.",
+      "result": "Zapísané úhrady: {{paid}}. Preskočené doklady: {{skipped}}.",
+      "reasons": {
+        "paid": "Uhradené",
+        "unavailable": "Nedostupný doklad",
+        "needs_review": "Potrebné overenie",
+        "credit": "Dobropis"
+      }
+    },
     "title": "Faktúry",
     "subtitle": "Dodávateľské faktúry, doklady z e-shopov a prehľad úhrad na jednom mieste.",
     "direction": "Druh evidencie",
@@ -5238,7 +5334,7 @@
     "noChartData": "Zatiaľ nie sú údaje pre tento prehľad.",
     "status": {
       "all": "Všetky",
-      "unknown": "Neoverené",
+      "unknown": "Potrebné overenie",
       "unpaid": "Neuhradené",
       "partial": "Čiastočne uhradené",
       "paid": "Uhradené",
@@ -5459,6 +5555,17 @@
         "restore": "Vráti doklad do aktívnych zoznamov a súčtov. Predchádzajúce spracovanie a úhrady zostanú zachované; pripojená príjemka sa obnovuje samostatne."
       },
       "errors": {
+      "invoice_service_fields_required": "Doplňte vystaviteľa, číslo, dátumy, celkovú sumu a menu, ktoré chýbajú na doklade.",
+      "invoice_service_already_exists": "Faktúra s týmto vystaviteľom a číslom už existuje.",
+      "invoice_vavrys_pdf_required": "Najprv nahrajte zodpovedajúcu faktúru Vavrys vo formáte PDF.",
+      "invoice_vavrys_isdoc_invalid": "Súbor ISDOC sa nepodarilo overiť.",
+      "invoice_vavrys_isdoc_mismatch": "ISDOC a PDF majú rozdielne položky alebo sumy.",
+      "invoice_vavrys_pdf_unrecognized": "PDF nezodpovedá overenému formátu faktúry Vavrys.",
+      "invoice_checklist_format": "Použite CSV, Excel XLSX alebo textové PDF.",
+      "invoice_checklist_file_size": "Vyberte neprázdny súbor do 8 MB.",
+      "invoice_checklist_too_many_rows": "Rozdeľte kontrolný zoznam na dávky do 500 riadkov.",
+      "invoice_checklist_unreadable": "Kontrolný zoznam sa nepodarilo prečítať.",
+      "invoice_checklist_no_rows": "Chýbajú riadky so stĺpcami Vystaviteľ a Číslo faktúry.",
         "invoice_not_found": "Faktúra už neexistuje.",
         "invoice_processing_changed": "Faktúra alebo jej príjemka sa medzičasom zmenila. Obnovte doklad a pripravte nový náhľad.",
         "invoice_processing_purchase_required": "Táto zmena spracovania je dostupná iba pre dodávateľské faktúry.",
@@ -5491,6 +5598,17 @@
     }
   },
   "invoiceCalendar": {
+    "sumMode": "Zobrazenie súčtov",
+    "sumModes": {
+      "both": "Celkom / Zostáva uhradiť",
+      "remaining": "Iba zostáva uhradiť",
+      "gross": "Iba celkom"
+    },
+    "sumLabel": {
+      "gross": "Celkom",
+      "remaining": "Zostáva"
+    },
+    "weekNumber": "{{count}}. týždeň",
     "title": "Kalendár splatností",
     "help": "Splatnosti všetkých faktúr zodpovedajúcich použitým filtrom. Kliknutím na faktúru otvoríte jej detail.",
     "view": "Zobrazenie kalendára",
@@ -5516,14 +5634,14 @@
     "openMonth": "Zobraziť tento mesiac",
     "show": "Kalendár a plán úhrad",
     "hide": "Skryť kalendár a plán úhrad",
-    "periodTotal": "Zostáva uhradiť vo vybranom období",
+    "periodTotal": "Súčty za vybrané obdobie",
     "remaining": "Zostáva uhradiť",
-    "unknownTotal": "Počet dokladov s neoverenou úhradou: {{count}}",
+    "unknownTotal": "Doklady s neznámou sumou: {{count}}",
     "noPayments": "Žiadne doklady v období",
     "summaryHelp": "Súčet známych zostávajúcich úhrad podľa splatnosti. Neoverené úhrady nie sú započítané; dobropisy neznižujú platby ostatných faktúr. Meny sa nesčítavajú.",
     "weekPlanning": "Plán úhrad po týždňoch",
     "weekScope": "Pondelok až nedeľa, v mesačnom pohľade iba dni vybraného mesiaca. Kliknutím na riadok zobrazíte faktúry.",
-    "unknownAmount": "Suma úhrady neoverená"
+    "unknownAmount": "Suma neznáma"
   },
   "orderWebhooks": {
     "title": "Okamžité oznámenia objednávok",

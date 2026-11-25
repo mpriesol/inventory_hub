@@ -9,6 +9,9 @@ import { invoiceMoney } from '../pages/invoiceArchiveUi';
 import { todayDate } from '../utils/format';
 import './invoiceCalendar.css';
 
+const sumModes = ['both', 'remaining', 'gross'] as const;
+type SumMode = typeof sumModes[number];
+
 export type InvoiceCalendarView = 'week' | 'month' | 'year';
 const DAY = 86400000;
 export function calendarDate(value: Date) { return value.toISOString().slice(0, 10); }
@@ -48,6 +51,7 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
   const { t, i18n } = useTranslation();
   const titleId = useId();
   const access = useSyncExternalStore(subscribeAccess, accessRevision);
+  const [sumMode, setSumMode] = useState<SumMode>('both');
   const [view, setView] = useState<InvoiceCalendarView>('month');
   const [anchor, setAnchor] = useState(todayDate);
   const [selectedDay, setSelectedDay] = useState(todayDate);
@@ -102,6 +106,7 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
         aria-label={`${fullDate(key)} · ${outside ? t('invoiceCalendar.openMonth') : t('invoiceCalendar.count', { count: items.length })}`} title={outside ? t('invoiceCalendar.openMonth') : undefined} data-testid={`calendar-day-${key}`}>
         <time dateTime={key}>{date.getUTCDate()}</time>{!outside && items.length > 0 && <span className="calendar-day-count">{items.length}</span>}
       </button>
+      {!outside && items.length > 0 && <div className="calendar-totals calendar-day-totals" data-testid={`calendar-day-total-${key}`}>{totals(data?.days?.[key] || [])}</div>}
       <div className="calendar-day-items">{!outside && items.slice(0, view === 'week' ? 6 : 3).map(item => invoiceLink(item, true))}
         {!outside && items.length > (view === 'week' ? 6 : 3) && <button type="button" className="calendar-more" onClick={() => chooseDay(key)}>{t('invoiceCalendar.more', { count: items.length - (view === 'week' ? 6 : 3) })}</button>}
       </div>
@@ -109,10 +114,19 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
   };
   const chosenItems = grouped.get(selectedDay) || [];
   const totals = (values: InvoiceCalendarTotal[]) => values.length ? values.map(value => <span className="calendar-total" key={value.currency || 'unknown'}>
-    <strong>{value.outstanding_amount === null ? `${t('invoiceCalendar.unknownAmount')}${value.currency ? ` · ${value.currency}` : ''}` : invoiceMoney(value.outstanding_amount, value.currency, language)}</strong>
+    {(['gross', 'remaining'] as const).filter(kind => sumMode === 'both' || sumMode === kind).map(kind => {
+      const amount = kind === 'gross' ? value.gross_amount : value.outstanding_amount;
+      const count = kind === 'gross' ? value.unknown_gross_count : value.unknown_count;
+      return <React.Fragment key={kind}>
+        <strong><span>{t(`invoiceCalendar.sumLabel.${kind}`)}</span> {amount == null ? `${t('invoiceCalendar.unknownAmount')}${value.currency ? ` · ${value.currency}` : ''}` : invoiceMoney(amount, value.currency, language)}</strong>
+        {count > 0 && <small className="calendar-unknown-total">{t('invoiceCalendar.unknownTotal', { count })}</small>}
+      </React.Fragment>;
+    })}
     {!value.currency && <small>{t('invoiceArchive.unknownCurrency')}</small>}
-    {value.unknown_count > 0 && <small className="calendar-unknown-total">{t('invoiceCalendar.unknownTotal', { count: value.unknown_count })}</small>}
-  </span>) : <span className="muted">{t('invoiceCalendar.noPayments')}</span>;
+  </span>) : <span className="muted">—</span>;
+  const first = parsedDate(period.from)!;
+  const calendarWeeks = view === 'week' ? [first] : Array.from({ length: 6 }, (_, index) => dayOffset(monday(first), 7 * index))
+    .filter(date => calendarDate(date) <= period.to);
   return <section className="invoice-due-calendar panel" aria-labelledby={titleId} data-testid="invoice-calendar">
     <div className="calendar-title-row"><div><h2 id={titleId}>{t('invoiceCalendar.title')}</h2><p className="muted small">{t('invoiceCalendar.help')}</p></div>
       <div className="calendar-views" aria-label={t('invoiceCalendar.view')}>
@@ -126,6 +140,8 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
         <button type="button" aria-label={t('invoiceCalendar.next')} data-testid="calendar-next" onClick={() => changePeriod(1)}><ChevronRight size={18} /></button>
       </div>
       <h3 aria-live="polite" data-testid="calendar-period">{title}</h3>
+      <label className="calendar-jump">{t('invoiceCalendar.sumMode')}<select data-testid="calendar-sum-mode" value={sumMode}
+        onChange={event => setSumMode(event.target.value as SumMode)}>{sumModes.map(mode => <option key={mode} value={mode}>{t(`invoiceCalendar.sumModes.${mode}`)}</option>)}</select></label>
       <label className="calendar-jump">{t('invoiceCalendar.date')}<input type="date" data-testid="calendar-anchor" value={anchor} onChange={event => {
         if (parsedDate(event.target.value)) { setAnchor(event.target.value); setSelectedDay(event.target.value); }
       }} /></label>
@@ -139,14 +155,6 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
         <h3>{t('invoiceCalendar.periodTotal')}</h3><div className="calendar-totals">{totals(data?.totals || [])}</div>
         <p className="muted small">{t('invoiceCalendar.summaryHelp')}</p>
       </section>
-      {view !== 'year' && <section className="calendar-week-planning" data-testid="calendar-week-planning"><h3>{t('invoiceCalendar.weekPlanning')}</h3>
-        <p className="muted small">{t('invoiceCalendar.weekScope')}</p>
-        {(data?.weeks || []).map(week => <details key={week.from} data-testid={`calendar-week-${week.from}`}>
-          <summary><span>{fullDate(week.from)} – {fullDate(week.to)}</span><span className="calendar-totals">{totals(week.totals)}</span></summary>
-          <div className="calendar-selected-invoices">{(data?.items || []).filter(item => week.invoice_ids.includes(item.id)).map(item => invoiceLink(item))}</div>
-          {!week.invoice_ids.length && <p className="muted small">{t('invoiceCalendar.emptyDay')}</p>}
-        </details>)}
-      </section>}
       <div className="calendar-legend">{['paid', 'unpaid', 'overdue', 'unknown'].map(value => <span key={value} className={`calendar-status ${value}`}>{t(`invoiceArchive.status.${value}`)}</span>)}</div>
       {view === 'year' ? <div className="calendar-year" data-testid="calendar-year-grid">
         {Array.from({ length: 12 }, (_, index) => { const month = monthStart(parsedDate(`${anchor.slice(0, 4)}-01-01`)!, index); return <section className="calendar-mini-month" key={index}>
@@ -162,9 +170,20 @@ export function InvoiceDueCalendar({ filters, refresh = 0 }: { filters: InvoiceA
           </div>
         </section>; })}
       </div> : <div className="calendar-grid-scroll"><div className={`calendar-main-grid ${view}`} data-testid="calendar-main-grid">
+        {view === 'month' && <div className="calendar-weekday">{t('invoiceCalendar.week')}</div>}
         {weekdays.map((day, index) => <div className="calendar-weekday" key={index}>{day}</div>)}
-        {(view === 'week' ? Array.from({ length: 7 }, (_, index) => dayOffset(parsedDate(period.from)!, index)) : monthDays(parsedDate(anchor)!))
-          .map(date => dayCell(date, view === 'month' ? parsedDate(anchor)!.getUTCMonth() : null))}
+        {calendarWeeks.map(weekStart => {
+          const from = calendarDate(weekStart) < period.from ? period.from : calendarDate(weekStart);
+          const week = data?.weeks?.find(entry => entry.from === from);
+          return <React.Fragment key={from}>
+            {view === 'month' && <div className="calendar-week-total" data-testid={`calendar-week-${from}`}>
+              <strong>{t('invoiceCalendar.weekNumber', { count: week?.week_number ?? 0 })}</strong>
+              <span>{t('invoiceCalendar.count', { count: week?.invoice_ids.length ?? 0 })}</span>
+              <div className="calendar-totals">{totals(week?.totals || [])}</div>
+            </div>}
+            {Array.from({ length: 7 }, (_, index) => dayCell(dayOffset(weekStart, index), view === 'month' ? first.getUTCMonth() : null))}
+          </React.Fragment>;
+        })}
       </div></div>}
       <section className="calendar-selected-day" aria-label={t('invoiceCalendar.selectedDay')}>
         <h3>{fullDate(selectedDay)} <span className="muted">· {t('invoiceCalendar.count', { count: chosenItems.length })}</span></h3>

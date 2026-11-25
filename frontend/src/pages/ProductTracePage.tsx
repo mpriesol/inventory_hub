@@ -1,3 +1,4 @@
+import { SupplierPreorderInfo } from '../components/product/SupplierPreorderInfo';
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -71,6 +72,7 @@ export function ProductTracePage() {
       {error && <div className="trace-notice is-error" role="alert">{t(`productTrace.errors.${error}`, { defaultValue: c('errors.request_failed') })}<Button variant="secondary" size="sm" onClick={() => setRetry(value => value + 1)}>{c('retry')}</Button></div>}
       {!code && !productId && <p className="trace-empty">{c('initial')}</p>}
       {data && <>
+        {product?.item_type === 'stock' && <SupplierPreorderInfo productId={product.id} />}
         {!!data.warnings.filter(warning => warning !== 'sales_hub_ledger_only').length && <div className="trace-notice" role="status">{data.warnings.filter(warning => warning !== 'sales_hub_ledger_only').map(warning => <p key={warning}>{t(`productTrace.warnings.${warning}`, { defaultValue: c('warningFallback') })}</p>)}</div>}
         {!product && data.matches.length > 0 && <section className="trace-panel" aria-labelledby="trace-matches"><h2 id="trace-matches">{c('chooseProduct')}</h2><div className="trace-matches">{data.matches.map(match => <button data-testid={`trace-match-${match.id}`} key={match.id} type="button" onClick={() => setParams({ ...(code ? { code } : {}), product_id: String(match.id) })}><strong>{match.name}</strong><code>{match.sku}</code><span>{t(`productEditor.itemTypes.${match.item_type}`)} · {unit(match.stock_unit)}</span></button>)}</div>{data.matches_truncated && <p>{c('matchesTruncated')}</p>}</section>}
         {product && <>

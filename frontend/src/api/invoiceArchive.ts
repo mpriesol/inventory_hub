@@ -4,18 +4,23 @@ import { CatalogApiError } from './catalog';
 
 export type InvoiceAmount = string | number;
 export type InvoiceDirection = 'purchase' | 'sale';
+export const invoicePaymentMethods = ['cash', 'card_slsp', 'card_tb', 'transfer_slsp', 'transfer_tb'] as const;
+export type InvoicePaymentMethod = typeof invoicePaymentMethods[number];
 export type InvoicePaymentStatus = 'unknown' | 'unpaid' | 'partial' | 'paid';
 export interface InvoicePayment {
+  method?: InvoicePaymentMethod | null;
   id: number; kind: 'opening' | 'payment' | 'refund' | 'reversal'; amount: string; currency: string;
   paid_at: string; note: string | null; actor: string | null;
   reverses_payment_id: number | null; reversed_by_id: number | null;
 }
 export interface InvoiceFinance {
+  needs_review?: boolean;
   payment_revision: number; currency: string | null; gross_amount: string | null;
   paid_amount: string | null; outstanding_amount: string | null; status: InvoicePaymentStatus;
   is_overdue: boolean; opening_required: boolean; payments: InvoicePayment[];
 }
 export interface ArchivedInvoice {
+  is_service_invoice?: boolean;
   id: number; direction: InvoiceDirection; document_type?: string; source_kind?: 'upload' | 'supplier' | 'shop';
   supplier_id: number | null; supplier_code: string | null; supplier_name: string | null;
   shop_code?: string | null; shop_name?: string | null; customer_name?: string | null;
@@ -40,6 +45,7 @@ export interface ArchivedInvoiceLine {
   is_new_product: boolean;
 }
 export interface ArchivedInvoiceDetail extends ArchivedInvoice {
+  files?: { id: number; filename: string; file_type: string }[];
   payment_revision: number;
   paid_at: string | null; paid_amount: InvoiceAmount | null; parse_error: string | null;
   receiving_session_id: number | null; receiving_invoice_number: string | null;
@@ -109,6 +115,7 @@ export const downloadSupplierInvoices = (supplier: string) => hubRequest<Supplie
 );
 export const getInvoiceSupplierOptions = (signal?: AbortSignal) => hubRequest<{ code: string; name: string }[]>(`${base}/supplier-options`, undefined, signal);
 export interface InvoiceMetadataChange {
+  payment_needs_review?: boolean;
   expected_revision: number; invoice_number?: string | null; invoice_date?: string | null; due_date?: string | null;
   total_amount?: string | null; vat_rate?: string | null; vat_included?: boolean; notes?: string | null; currency?: string | null;
 }
@@ -125,7 +132,7 @@ export const updateArchivedInvoice = (id: number, body: InvoiceMetadataChange) =
 export const deleteArchivedInvoice = (id: number) => archiveMutation(`${base}/${id}?delete_file=true`, 'DELETE');
 export interface InvoicePaymentRequest {
   request_id: string; expected_revision: number; kind: 'payment' | 'refund'; amount: string;
-  paid_at: string; note: string; opening_paid_amount?: string;
+  paid_at: string; note: string; method?: InvoicePaymentMethod; opening_paid_amount?: string;
 }
 export interface InvoiceReversalRequest { request_id: string; expected_revision: number; note: string }
 export interface InvoicePaymentResult { invoice_id: number; request_id: string; payment_revision: number; finance: InvoiceFinance }
@@ -153,6 +160,43 @@ export const reverseInvoicePayment = async (id: number, paymentId: number, body:
   paymentResult(await hubRequest<unknown>(`${base}/${id}/payments/${paymentId}/reverse`, body), id, body.request_id, body.expected_revision);
 export const getInvoicePaymentOperation = async (id: number, requestId: string, expectedRevision: number) =>
   paymentResult(await hubRequest<unknown>(`${base}/${id}/payment-operations/${encodeURIComponent(requestId)}`), id, requestId, expectedRevision);
+
+export interface InvoiceBatchPaymentRequest { request_id: string; invoice_ids: number[]; paid_date: string; method?: InvoicePaymentMethod }
+export interface InvoiceBatchPaymentResult {
+  request_id: string; paid: { invoice_id: number; amount: string; currency: string }[];
+  skipped: { invoice_id: number; reason: 'paid' | 'unavailable' | 'needs_review' | 'credit' }[];
+}
+function batchPaymentResult(value: InvoiceBatchPaymentResult, expected: InvoiceBatchPaymentRequest) {
+  if (value?.request_id !== expected.request_id || !Array.isArray(value.paid) || !Array.isArray(value.skipped)) {
+    throw new Error('Payment acknowledgment does not match the pending batch');
+  }
+  const ids = [...value.paid, ...value.skipped].map(row => row.invoice_id);
+  if (ids.length !== expected.invoice_ids.length || new Set(ids).size !== ids.length || ids.some(id => !expected.invoice_ids.includes(id))) {
+    throw new Error('Payment acknowledgment does not match the selected invoices');
+  }
+  return value;
+}
+export const addInvoiceBatchPayment = async (request: InvoiceBatchPaymentRequest) =>
+  batchPaymentResult(await archiveMutation(`${base}/payments/batch`, 'POST', request), request);
+export const getInvoiceBatchPayment = async (request: InvoiceBatchPaymentRequest) =>
+  batchPaymentResult(await hubRequest<InvoiceBatchPaymentResult>(`${base}/payments/batch/${encodeURIComponent(request.request_id)}`), request);
+
+export interface InvoiceChecklistRow {
+  row: number; issuer: string; number: string; invoice_date: string | null; amount: string | null; currency: string | null;
+  issue: string | null; raw?: string; invoice_id?: number | null;
+}
+export type InvoiceChecklistResult = Record<'found' | 'missing' | 'review', InvoiceChecklistRow[]>;
+export const previewInvoiceChecklist = async (file: File) => {
+  const path = `${base}/completeness/preview`;
+  const body = new FormData();
+  body.set('file', file);
+  const response = await fetch(path, hubFetchInit(path, { method: 'POST', body }, hubAccessToken()));
+  const value = await response.json();
+  if (!response.ok) throw new CatalogApiError(value?.detail?.code || 'request_failed', String(response.status));
+  return value as { rows: InvoiceChecklistRow[] };
+};
+export const compareInvoiceChecklist = (date_from: string, date_to: string, rows: InvoiceChecklistRow[]) =>
+  hubRequest<InvoiceChecklistResult>(`${base}/completeness/compare`, { date_from, date_to, rows });
 
 export type InvoiceProcessingAction = 'process_without_stock' | 'reopen' | 'archive' | 'restore';
 export interface InvoiceProcessingSnapshot {
@@ -213,6 +257,18 @@ export const getInvoiceProcessingOperation = async (id: number, requestId: strin
   processingResult(await hubRequest<unknown>(`${base}/${id}/processing-operations/${encodeURIComponent(requestId)}`), id, requestId, expected);
 
 /** Download through the same credential/session boundary as JSON calls. */
+export async function downloadInvoiceFile(invoice: number, file: { id: number; filename: string }) {
+  const path = `${base}/${invoice}/files/${file.id}`;
+  const response = await fetch(path, hubFetchInit(path, { method: 'GET' }, hubAccessToken()));
+  if (!response.ok) throw new Error('Invoice attachment unavailable');
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = file.filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export async function downloadInvoiceArchive(ids: number[] | number): Promise<void> {
   const batch = Array.isArray(ids), path = batch ? `${base}/export` : `${base}/${ids}/download`;
   const response = await fetch(path, hubFetchInit(path, batch ? {

@@ -79,6 +79,8 @@ COPY infra/db-init/056_receiving_manual.sql /app/inventory_hub/migrations/056_re
 COPY infra/db-init/057_setting_catalogs.sql /app/inventory_hub/migrations/057_setting_catalogs.sql
 COPY infra/db-init/058_supplier_availability_policy.sql /app/inventory_hub/migrations/058_supplier_availability_policy.sql
 COPY infra/db-init/059_sku_brand_management.sql /app/inventory_hub/migrations/059_sku_brand_management.sql
+COPY infra/db-init/060_invoice_workflows.sql /app/inventory_hub/migrations/060_invoice_workflows.sql
+COPY infra/db-init/061_supplier_preorders.sql /app/inventory_hub/migrations/061_supplier_preorders.sql
 COPY api/pl_pdf_invoice_extractor.py /app/pl_pdf_invoice_extractor.py
 
 EXPOSE 8000

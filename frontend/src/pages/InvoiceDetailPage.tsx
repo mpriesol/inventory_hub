@@ -4,8 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Download, Edit, RefreshCw } from 'lucide-react';
 import { accessRevision, hubUser, subscribeAccess } from '../api/access';
 import {
-  ArchivedInvoiceDetail, InvoiceMetadataChange, InvoicePaymentRequest, InvoicePaymentResult, InvoiceReversalRequest,
-  addInvoicePayment, downloadInvoiceArchive, getArchivedInvoice,
+  ArchivedInvoiceDetail, InvoiceMetadataChange, InvoicePaymentMethod, invoicePaymentMethods, InvoicePaymentRequest, InvoicePaymentResult, InvoiceReversalRequest,
+  addInvoicePayment, downloadInvoiceArchive, downloadInvoiceFile, getArchivedInvoice,
   getInvoicePaymentOperation, reparseNorthfinderPdf, reverseInvoicePayment, updateArchivedInvoice,
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, InvoicePaymentBadge } from './invoiceArchiveUi';
@@ -34,7 +34,7 @@ function writePending(id: number, value: PendingPayment | null) {
 const editValues = (invoice: ArchivedInvoiceDetail) => ({
   invoice_number: invoice.invoice_number || '', invoice_date: invoice.invoice_date || '', due_date: invoice.due_date || '',
   total_amount: invoice.total_amount === null ? '' : String(invoice.total_amount), vat_rate: invoice.vat_rate === null ? '' : String(invoice.vat_rate),
-  vat_included: invoice.vat_included, notes: invoice.notes || '', currency: invoice.currency || '',
+  vat_included: invoice.vat_included, payment_needs_review: !!invoice.finance?.needs_review, notes: invoice.notes || '', currency: invoice.currency || '',
 });
 const decimalInput = (value: string) => value.trim().replace(',', '.');
 const positiveMoney = (value: string) => /^\d+(\.\d{1,2})?$/.test(decimalInput(value)) && /[1-9]/.test(value);
@@ -56,7 +56,7 @@ export function InvoiceDetailPage() {
   const [pending, setPending] = useState<PendingPayment | null>(() => readPending(id));
   const request = useRef(pending);
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [payment, setPayment] = useState({ kind: 'payment' as 'payment' | 'refund', amount: '', paid_at: '', note: '', opening_paid_amount: '' });
+  const [payment, setPayment] = useState({ kind: 'payment' as 'payment' | 'refund', amount: '', paid_at: '', note: '', method: '' as InvoicePaymentMethod | '', opening_paid_amount: '' });
   const [reverseId, setReverseId] = useState<number | null>(null);
   const [reverseNote, setReverseNote] = useState('');
   const [conflict, setConflict] = useState(false);
@@ -89,7 +89,7 @@ export function InvoiceDetailPage() {
   };
   const finishPayment = (value: InvoicePaymentResult) => {
     retain(null); setPaymentOpen(false); setReverseId(null); setReverseNote('');
-    setPayment({ kind: 'payment', amount: '', paid_at: '', note: '', opening_paid_amount: '' });
+    setPayment({ kind: 'payment', amount: '', paid_at: '', note: '', method: '' as InvoicePaymentMethod | '', opening_paid_amount: '' });
     setInvoice(old => old ? { ...old, finance: value.finance, payment_revision: value.payment_revision, payment_status: value.finance.status, is_overdue: value.finance.is_overdue } : old);
     setError(''); setMessage(t('invoiceArchive.paymentSaved'));
   };
@@ -180,7 +180,11 @@ export function InvoiceDetailPage() {
       {invoice && <p className="muted">{invoice.supplier_name || invoice.shop_name || invoice.shop_code || '—'} · {invoiceDate(invoice.invoice_date, i18n.language)}</p>}
     </div><div className="actions"><button data-testid="invoice-detail-refresh" disabled={busy || dirty || processingLocked} onClick={() => setRefresh(value => value + 1)}><RefreshCw size={16} />{t('common.refresh')}</button>
       {invoice && <button disabled={busy} data-testid="invoice-original-download" onClick={download}><Download size={16} />{t('invoiceArchive.downloadOriginal')}</button>}</div></header>
-    {blocker.state === 'blocked' && <div className="notice warning" role="alert"><p>{t('invoiceArchive.unsaved')}</p><div className="actions"><button onClick={() => blocker.reset()}>{t('invoiceArchive.keepEditing')}</button><button onClick={() => blocker.proceed()}>{t('invoiceArchive.discard')}</button></div></div>}
+    {!!invoice?.files?.length && <div className="actions">{invoice.files.map(file =>
+      <button type="button" key={file.id} disabled={busy} onClick={() => {
+        void downloadInvoiceFile(id, file).catch(reason => setError(invoiceError(reason, t('invoiceArchive.downloadFailed'))));
+      }}><Download size={15} />{file.filename}</button>)}</div>}
+    {blocker.state === 'blocked'  && <div className="notice warning" role="alert"><p>{t('invoiceArchive.unsaved')}</p><div className="actions"><button onClick={() => blocker.reset()}>{t('invoiceArchive.keepEditing')}</button><button onClick={() => blocker.proceed()}>{t('invoiceArchive.discard')}</button></div></div>}
     {error && <div className="notice error" role="alert" data-testid="invoice-detail-error">{error}</div>}
     {message && <div className="notice success" role="status">{message}</div>}
     {pending && <section className="notice warning" data-testid="invoice-payment-pending"><p>{t('invoiceArchive.paymentUncertain')}</p><p className="small">{t('invoiceArchive.requestReference')}: {pending.body.request_id}</p><div className="actions">
@@ -195,6 +199,8 @@ export function InvoiceDetailPage() {
           <label>{t('invoiceArchive.sourceAmount')}<input data-testid="invoice-edit-total" inputMode="decimal" pattern="-?[0-9]+([.,][0-9]{1,2})?" disabled={amountLocked} value={edit.total_amount} onChange={event => setEdit({ ...edit, total_amount: event.target.value })} /></label>
           <label>{t('invoiceArchive.vatRate')}<input inputMode="decimal" disabled={amountLocked} value={edit.vat_rate} onChange={event => setEdit({ ...edit, vat_rate: event.target.value })} /></label>
           <label className="check"><input type="checkbox" disabled={amountLocked} checked={edit.vat_included} onChange={event => setEdit({ ...edit, vat_included: event.target.checked })} />{t('invoiceArchive.vatIncluded')}</label>
+          <label className="check"><input type="checkbox" data-testid="invoice-payment-review" checked={edit.payment_needs_review}
+            onChange={event => setEdit({ ...edit, payment_needs_review: event.target.checked })} />{t('invoiceArchive.status.unknown')}</label>
           <label className="wide">{t('invoiceArchive.notes')}<textarea rows={3} data-testid="invoice-edit-notes" value={edit.notes} onChange={event => setEdit({ ...edit, notes: event.target.value })} /></label>
         </div>{amountLocked && <p className="muted small">{t('invoiceArchive.amountLocked')}</p>}<footer><button type="button" onClick={() => setEditing(false)}>{t('common.cancel')}</button><button className="primary" data-testid="invoice-edit-save" disabled={!dirty}>{t('common.save')}</button></footer></fieldset></form>
           : <dl><dt>{t('invoiceArchive.invoice_number')}</dt><dd>{invoice.invoice_number || '—'}</dd><dt>{t('invoiceArchive.direction')}</dt><dd>{t(`invoiceArchive.directionLabels.${invoice.direction || 'purchase'}`)}{invoice.document_type && invoice.document_type !== 'invoice' && ` · ${t(`invoiceArchive.documentType.${invoice.document_type}`, { defaultValue: invoice.document_type })}`}</dd>
@@ -207,11 +213,11 @@ export function InvoiceDetailPage() {
         <button style={{ marginTop: '.7rem' }} className="primary" disabled={locked || editing || !finance} data-testid="invoice-payment-open" onClick={() => {
           if (!paymentOpen) {
             const amount = finance?.outstanding_amount ?? finance?.gross_amount ?? '';
-            setPayment({ kind: String(amount).startsWith('-') ? 'refund' : 'payment', amount: String(amount).replace(/^-/, ''), paid_at: todayDate(), note: '', opening_paid_amount: '' });
+            setPayment({ kind: String(amount).startsWith('-') ? 'refund' : 'payment', amount: String(amount).replace(/^-/, ''), paid_at: todayDate(), note: '', method: '', opening_paid_amount: '' });
           }
           setPaymentOpen(value => !value);
         }}>{t('invoiceArchive.managePayment')}</button>
-      </section>{invoice.direction !== 'sale' && <section className="panel"><h2>{t('invoiceArchive.receiving')}</h2><p>{t(`invoiceArchive.receivingStatus.${activeReceipt?.status || invoice.receiving_status}`, { defaultValue: invoice.receiving_status })}</p>
+      </section>{invoice.direction !== 'sale' && <section className="panel"><h2>{t('invoiceArchive.receiving')}</h2><p>{t(`invoiceArchive.receivingStatus.${activeReceipt?.status || (invoice.is_service_invoice ? 'processed_without_stock' : invoice.receiving_status)}`, { defaultValue: invoice.receiving_status })}</p>
         {receipts.length > 0 && invoice.supplier_code ? <ul>{receipts.map(receipt => <li key={receipt.id}>
           <Link data-testid={receipt.id === activeReceipt?.id ? 'invoice-receiving-link' : undefined}
             to={`/receiving/${encodeURIComponent(receipt.invoice_number)}?${new URLSearchParams({ supplier: invoice.supplier_code!, session: String(receipt.id) })}`}>
@@ -228,17 +234,21 @@ export function InvoiceDetailPage() {
         }} />
       {paymentOpen && finance && <form className="panel" data-testid="invoice-payment-form" onSubmit={event => { event.preventDefault(); if (!paymentValid || locked) return;
         const body: InvoicePaymentRequest = { request_id: crypto.randomUUID(), expected_revision: finance.payment_revision, kind: payment.kind, amount: decimalInput(payment.amount), paid_at: `${payment.paid_at}T00:00:00Z`, note: payment.note };
+        if (payment.method) body.method = payment.method;
         if (finance.opening_required) body.opening_paid_amount = decimalInput(payment.opening_paid_amount);
         submitPayment({ invoice_id: id, actor: currentActor(), body });
       }}><h2>{t('invoiceArchive.managePayment')}</h2><p className="muted small">{t('invoiceArchive.paymentDirectionHelp')}</p><fieldset disabled={locked}><div className="fields">
         <label>{t('invoiceArchive.paymentKind')}<select data-testid="invoice-payment-kind" value={payment.kind} onChange={event => setPayment({ ...payment, kind: event.target.value as 'payment' | 'refund' })}><option value="payment">{t('invoiceArchive.paymentKinds.payment')}</option><option value="refund">{t('invoiceArchive.paymentKinds.refund')}</option></select></label>
         <label>{t('invoiceArchive.amount')} ({invoice.currency})<input required data-testid="invoice-payment-amount" inputMode="decimal" pattern="[0-9]+([.,][0-9]{1,2})?" value={payment.amount} onChange={event => setPayment({ ...payment, amount: event.target.value })} /></label>
         <label>{t('invoiceArchive.paymentDate')}<input required data-testid="invoice-payment-date" type="date" value={payment.paid_at} onChange={event => setPayment({ ...payment, paid_at: event.target.value })} /></label>
+        <label>{t('invoiceArchive.paymentMethod')}<select data-testid="invoice-payment-method" value={payment.method}
+          onChange={event => setPayment({ ...payment, method: event.target.value as InvoicePaymentMethod | '' })}><option value="">—</option>
+          {invoicePaymentMethods.map(method => <option key={method} value={method}>{t(`invoiceArchive.paymentMethods.${method}`)}</option>)}</select></label>
         <label className="wide">{t('invoiceArchive.notes')}<input data-testid="invoice-payment-note" value={payment.note} onChange={event => setPayment({ ...payment, note: event.target.value })} /></label>
         {finance.opening_required && <label className="wide">{t('invoiceArchive.openingPaidAmount')} ({invoice.currency})<input required data-testid="invoice-opening-paid" inputMode="decimal" value={payment.opening_paid_amount} onChange={event => setPayment({ ...payment, opening_paid_amount: event.target.value })} /><span>{t('invoiceArchive.openingPaidHelp')}</span></label>}
       </div><p className="muted small">{t('invoiceArchive.paymentSignsHelp')}</p><footer><button type="button" onClick={() => setPaymentOpen(false)}>{t('common.cancel')}</button><button className="primary" data-testid="invoice-payment-save" disabled={!paymentValid}>{t('invoiceArchive.confirmPayment')}</button></footer></fieldset></form>}
-      <section className="panel"><h2>{t('invoiceArchive.paymentHistory')}</h2>{finance?.payments.length ? <div className="table-scroll"><table><thead><tr>{['paymentDate', 'paymentKind', 'amount', 'notes', 'actor', 'actions'].map(key => <th key={key}>{t(`invoiceArchive.${key}`)}</th>)}</tr></thead><tbody>{finance.payments.map(row => <tr key={row.id} data-testid={`invoice-payment-row-${row.id}`}>
-        <td>{invoiceDate(row.paid_at, i18n.language)}</td><td>{t(`invoiceArchive.paymentKinds.${row.reverses_payment_id ? 'reversal' : row.kind}`)}{row.reversed_by_id && <span className="secondary">{t('invoiceArchive.reversed')}</span>}</td><td className="amount">{invoiceMoney(row.amount, row.currency, i18n.language)}</td><td>{row.note || '—'}</td><td>{row.actor || '—'}</td>
+      <section className="panel"><h2>{t('invoiceArchive.paymentHistory')}</h2>{finance?.payments.length ? <div className="table-scroll"><table><thead><tr>{['paymentDate', 'paymentKind', 'paymentMethod', 'amount', 'notes', 'actor', 'actions'].map(key => <th key={key}>{t(`invoiceArchive.${key}`)}</th>)}</tr></thead><tbody>{finance.payments.map(row => <tr key={row.id} data-testid={`invoice-payment-row-${row.id}`}>
+        <td>{invoiceDate(row.paid_at, i18n.language)}</td><td>{t(`invoiceArchive.paymentKinds.${row.reverses_payment_id ? 'reversal' : row.kind}`)}{row.reversed_by_id && <span className="secondary">{t('invoiceArchive.reversed')}</span>}</td><td>{row.method ? t(`invoiceArchive.paymentMethods.${row.method}`) : '—'}</td><td className="amount">{invoiceMoney(row.amount, row.currency, i18n.language)}</td><td>{row.note || '—'}</td><td>{row.actor || '—'}</td>
         <td>{!['opening', 'reversal'].includes(row.kind) && !row.reverses_payment_id && !row.reversed_by_id && <button disabled={locked || editing} data-testid={`invoice-reverse-${row.id}`} onClick={() => { setReverseId(row.id); setReverseNote(''); }}>{t('invoiceArchive.reversePayment')}</button>}</td>
       </tr>)}</tbody></table></div> : <p className="muted">{t('invoiceArchive.noPaymentHistory')}</p>}
         {reverseId !== null && <form style={{ marginTop: '1rem' }} onSubmit={event => { event.preventDefault(); if (!finance || locked || !reverseNote.trim()) return;

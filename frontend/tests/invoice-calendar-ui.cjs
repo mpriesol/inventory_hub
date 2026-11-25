@@ -59,9 +59,9 @@ global.fetch = async (path, options = {}) => {
   if (mode === 'failed' || mode === 'limit') return { ok: false, status: mode === 'limit' ? 409 : 502,
     json: async () => ({ detail: { code: mode === 'limit' ? 'invoice_calendar_range_too_large' : 'request_failed' } }) };
   if (mode === 'deferred') return new Promise(resolve => { release = () => resolve(reply({ items: [{ ...documents[0], invoice_number: 'STALE-RESULT' }], total: 1 })); });
-  const totals = [{currency:'EUR',outstanding_amount:'125.37',unknown_count:1,invoice_count:2}, {currency:'CZK',outstanding_amount:'0.00',unknown_count:0,invoice_count:1}, {currency:'USD',outstanding_amount:null,unknown_count:2,invoice_count:2}];
+  const totals = [{currency:'EUR',gross_amount:'150.00',unknown_gross_count:0,outstanding_amount:'125.37',unknown_count:1,invoice_count:2}, {currency:'CZK',gross_amount:'200.00',unknown_gross_count:0,outstanding_amount:'0.00',unknown_count:0,invoice_count:1}, {currency:'USD',gross_amount:null,unknown_gross_count:2,outstanding_amount:null,unknown_count:2,invoice_count:2}];
   return reply({ range_from: url.searchParams.get('range_from'), range_to: url.searchParams.get('range_to'), items, total: items.length, limit: 5000,
-    totals, weeks:[{from:'2024-02-26',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}],
+    totals, days:{'2024-02-29':totals}, weeks:[{week_number:9,from:'2024-02-26',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}],
     months:[{from:'2024-02-01',to:'2024-02-29',totals,invoice_ids:items.map(item=>item.id)}] });
 };
 
@@ -76,15 +76,22 @@ global.fetch = async (path, options = {}) => {
   await draw(); await date('2024-02-29');
   assert.equal(calls.at(-1).url.searchParams.get('supplier_code'), 'exact-vendor');
   assert.equal(calls.at(-1).url.searchParams.get('range_to'), '2024-02-29');
-  assert.equal(required('calendar-main-grid').querySelectorAll('.calendar-day').length, 42);
+  assert.equal(required('calendar-main-grid').querySelectorAll('.calendar-day').length, 35);
   assert(required('calendar-payment-summary').textContent.includes('125.37 EUR'));
   assert(required('calendar-payment-summary').textContent.includes('0.00 CZK'));
   assert(required('calendar-payment-summary').textContent.includes(i18n.t('invoiceCalendar.unknownAmount') + ' · USD'));
   assert(!required('calendar-payment-summary').textContent.includes('0.00 USD'), 'All-unverified amounts must not look like zero payments due');
   assert(required('calendar-payment-summary').textContent.includes(i18n.t('invoiceCalendar.unknownTotal', {count:1})), 'Unknown settlements are visible alongside confirmed sums');
   const week = required('calendar-week-2024-02-26');
-  await act(async()=>{week.querySelector('summary').click(); await tick();});
-  assert(week.open); assert(week.querySelector('a[href="/invoices/101"]'));
+  assert(week.textContent.includes('Week 9'));
+  assert(week.textContent.includes('125.37 EUR'));
+  assert(required('calendar-day-total-2024-02-29').textContent.includes('150.00 EUR'));
+  const callsBeforeMode = calls.length;
+  await act(async () => { required('calendar-sum-mode').value = 'gross';
+    required('calendar-sum-mode').dispatchEvent(new dom.window.Event('change', { bubbles: true })); await tick(); });
+  assert(!week.textContent.includes('125.37 EUR'));
+  assert(week.textContent.includes('150.00 EUR'));
+  assert.equal(calls.length, callsBeforeMode);
   assert(required('calendar-day-2024-01-29').getAttribute('aria-label').includes('Open this month'));
   assert(!required('calendar-day-2024-01-29').getAttribute('aria-label').includes('0 invoices'), 'Unqueried adjacent month days do not claim zero invoices');
   assert(document.querySelector('a[href="/invoices/101"]').classList.contains('unknown'));
@@ -98,7 +105,7 @@ global.fetch = async (path, options = {}) => {
   assert.equal(required('calendar-main-grid').querySelectorAll('.calendar-day').length, 7);
   await click('calendar-view-year');
   assert.equal(document.querySelectorAll('.calendar-mini-month').length, 12);
-  assert(required('calendar-month-total-2').textContent.includes('125.37 EUR'), 'Year overview includes each monthly payment sum');
+  assert(required('calendar-month-total-2').textContent.includes('150.00 EUR'), 'Year overview includes each monthly payment sum');
   assert.equal(calls.at(-1).url.searchParams.get('range_to'), '2024-12-31');
   await date('2024-10-15');
   await click('calendar-mini-2024-02-29');

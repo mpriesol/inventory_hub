@@ -64,6 +64,8 @@ MIGRATIONS = (
     "setting_catalogs_migrate",      # 057; shared dictionaries, no stock authority changes
     "supplier_availability_policy_migrate",  # 058; missing-feed policy and evidence history
     "sku_brand_management_migrate",   # 059; brand archival and used prefix reservations
+    "invoice_workflows_migrate",      # 060; settlements and service invoices
+    "supplier_preorders_migrate",     # 061; supplier preorders and invoice links
 )
 
 

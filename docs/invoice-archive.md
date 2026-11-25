@@ -130,7 +130,19 @@ Protected `GET /invoices/calendar` returns `totals`, `weeks` and `months` alongs
 
 The read is limited to 5,000 candidate invoices after the SQL filters and before the financial status/overdue filters. A larger period fails visibly with `invoice_calendar_range_too_large`; no partial calendar is presented as complete. Choose a month or supplier to reduce the range. Errors and filter changes clear old calendar events, including a late response to an aborted request.
 
-Due dates come from saved invoice data. Documents without a due date remain in the table and cannot appear on a calendar date. Payment state and overdue markers reuse the current append-only settlement snapshot; an unknown payment is not labeled unpaid. Amounts retain their currency and are never summed across currencies. This endpoint has no writes, external API calls, file downloads or new migration.
+Due dates come from saved invoice data. Documents without a due date remain in the table and cannot appear on a calendar date. Payment state and overdue markers use the settlement ledger and the explicit new-upload unpaid default. Amounts retain their currency and are never summed across currencies. This endpoint has no writes, external API calls, file downloads or new migration.
+
+The calendar displays gross and outstanding amounts by currency for each day, week and month. Switch the toolbar between both values, outstanding only and totals only. The first column in month view shows the ISO week, invoice count and sums for the month dates in that week.
+
+## Service invoices and completeness
+
+Select **Faktúra za služby** when uploading in Faktúry to record the issuer as free text without a supplier card. Supply the document number, issue date, due date, currency and gross total. The form may leave explicitly readable PDF fields blank. The archive retains the original and the service document takes part in payments, exports and the calendar. No stock or receiving lines are created.
+
+In **Kontrola úplnosti faktúr**, select an issue-date period and read a CSV, XLSX or text-based PDF checklist. Include Vystaviteľ and Číslo faktúry headers. The preview displays optional issue date, total and currency plus unparseable rows. Comparison uses the issuer and invoice number in the selected period. Findings include links to matched documents and reasons for duplicates, ambiguity or differing facts. Neither endpoint writes invoice data.
+
+## Vavrys documents
+
+The first validated Vavrys PDF creates its supplier entry if needed. The Czech and Slovak issuers share the commercial supplier and keep independent invoice keys. Both PDFs are sufficient for archive and goods receiving. The Slovak document's postage is part of the invoice gross and VAT recap and is excluded from the receiving CSV. Upload the matching ISDOC after the PDF, or include both in one upload batch. An attachment is accepted only when issuer, number, currency, totals and item quantities/net amounts agree. The source files are available from the invoice detail.
 
 ## Accountant download
 

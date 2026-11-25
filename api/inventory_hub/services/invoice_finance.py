@@ -36,6 +36,9 @@ def amount_value(value):
         raise ValueError("Use a finite amount with at most two decimal places") from None
 
 
+PaymentMethod = Literal["cash", "card_slsp", "card_tb", "transfer_slsp", "transfer_tb"]
+
+
 class PaymentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID
@@ -43,6 +46,7 @@ class PaymentRequest(BaseModel):
     kind: Literal["payment", "refund"]
     amount: StrictStr = Field(max_length=32)
     paid_at: datetime
+    method: PaymentMethod | None = None
     note: StrictStr = Field(default="", max_length=2000)
     opening_paid_amount: StrictStr | None = Field(default=None, max_length=32)
 
@@ -115,6 +119,8 @@ def source_paid_amount(row):
     # column's default 'unpaid' alone is not evidence about a historical file.
     elif row.get("source_payment_status") == "unpaid":
         amount = Decimal(0)
+    elif row.get("payment_assumed_unpaid") and not row.get("source_payment_status"):
+        amount = Decimal(0)
     else:
         return None
     return -abs(amount) if row.get("document_type") == "credit_note" else amount
@@ -144,7 +150,12 @@ def snapshot(row, payments=(), *, today=None):
     if gross is not None and settled is not None and not balance_valid(gross, settled):
         issues.append("invoice_payment_balance_conflict")
     outstanding = gross - settled if gross is not None and settled is not None else None
-    if gross is None or settled is None or issues:
+    needs_review = bool(row.get("payment_needs_review"))
+    if needs_review:
+        outstanding = None
+    if not needs_review and gross is None and row.get("payment_assumed_unpaid") and settled == 0:
+        status = "unpaid"
+    elif gross is None or settled is None or needs_review or issues:
         status = "unknown"
     else:
         status = "paid" if settled == gross else "unpaid" if settled == 0 else "partial"
@@ -152,14 +163,14 @@ def snapshot(row, payments=(), *, today=None):
     overdue = bool(due and due < today and outstanding is not None and outstanding != 0 and status != "unknown")
     reversed_by = {item["reverses_payment_id"]: item["id"] for item in payments if item.get("reverses_payment_id")}
     return {
-        "payment_revision": row.get("payment_revision", 0), "currency": currency,
+        "payment_revision": row.get("payment_revision", 0), "currency": currency, "needs_review": needs_review,
         "gross_amount": money(gross), "paid_amount": money(settled),
         "outstanding_amount": money(outstanding), "status": status, "is_overdue": overdue,
         "opening_required": not payments and not row.get("ledger_count", 0) and settled is None,
         "issues": issues,
         "payments": [{"id": item["id"], "kind": item["kind"], "amount": money(item["amount"]),
             "currency": item["currency"], "paid_at": item["paid_at"].isoformat() if item["paid_at"] else None,
-            "note": item["note"], "actor": item["actor"], "reverses_payment_id": item["reverses_payment_id"],
+            "note": item["note"], "method": item.get("method"), "actor": item["actor"], "reverses_payment_id": item["reverses_payment_id"],
             "reversed_by_id": reversed_by.get(item["id"]), "created_at": item["created_at"].isoformat()}
             for item in payments],
     }
@@ -175,8 +186,8 @@ async def detail(db, row):
 
 
 async def update_metadata(db, invoice_id, changes, expected_revision):
-    allowed = {"invoice_number", "invoice_date", "due_date", "currency", "total_amount", "vat_rate", "vat_included", "items_count", "notes"}
-    if not changes or changes.keys() - allowed:
+    allowed = {"invoice_number", "invoice_date", "due_date", "currency", "total_amount", "vat_rate", "vat_included", "items_count", "notes", "payment_needs_review"}
+    if not changes or changes.keys() - allowed or ("payment_needs_review" in changes and changes["payment_needs_review"] is None):
         raise FinanceError("invoice_metadata_invalid", 422)
     found = (await db.execute(text("SELECT * FROM uploaded_invoices WHERE id=:id FOR UPDATE"), {"id": invoice_id})).mappings().first()
     if found is None:
@@ -187,7 +198,7 @@ async def update_metadata(db, invoice_id, changes, expected_revision):
     if row["payment_revision"] != expected_revision:
         raise FinanceError("invoice_payment_revision_changed")
     changed_fields = {key for key, value in changes.items() if row.get(key) != value}
-    if row.get("source_kind") in ("supplier", "shop") and changed_fields - {"notes", "due_date"}:
+    if row.get("source_kind") in ("supplier", "shop") and changed_fields - {"notes", "due_date", "payment_needs_review"}:
         raise FinanceError("invoice_source_facts_read_only")
     monetary = {"currency", "total_amount", "vat_rate", "vat_included"}
     payments = await payment_rows(db, invoice_id)
@@ -222,7 +233,7 @@ async def operation_result(db, invoice_id, request_id):
 async def apply_payment(db, invoice_id, request, *, actor, reverses_payment_id=None):
     """Serialize with metadata/source edits; replay is checked before revision."""
     payload_hash = sha256(json.dumps({"invoice_id": invoice_id, "reverses_payment_id": reverses_payment_id,
-        "request": request.model_dump(mode="json")}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        "request": request.model_dump(mode="json", exclude={"method"} if getattr(request, "method", None) is None else None)}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     # The UUID lock also serializes accidental reuse against another invoice.
     await db.execute(text("SELECT pg_advisory_xact_lock(:key)"),
                      {"key": int.from_bytes(request.request_id.bytes[:8], "big", signed=True)})
@@ -277,18 +288,20 @@ async def apply_payment(db, invoice_id, request, *, actor, reverses_payment_id=N
         kind, paid_at = request.kind, request.paid_at
     if not balance_valid(gross, settled + delta):
         raise FinanceError("invoice_payment_amount_exceeds_balance")
-    insert_sql = text("""INSERT INTO invoice_payments(invoice_id,kind,amount,currency,paid_at,note,actor,reverses_payment_id)
-        VALUES(:id,:kind,:amount,:currency,:paid_at,:note,:actor,:reverses_payment_id)""")
+    insert_sql = text("""INSERT INTO invoice_payments(invoice_id,kind,amount,currency,paid_at,note,actor,reverses_payment_id,method)
+        VALUES(:id,:kind,:amount,:currency,:paid_at,:note,:actor,:reverses_payment_id,:method)""")
     if opening is not None:
         await db.execute(insert_sql, {"id": invoice_id, "kind": "opening", "amount": opening, "currency": currency,
             "paid_at": row.get("source_paid_at") or row.get("paid_at"), "note": "Opening paid balance confirmed before first manual settlement",
-            "actor": actor, "reverses_payment_id": None})
+            "actor": actor, "reverses_payment_id": None, "method": None})
     await db.execute(insert_sql, {"id": invoice_id, "kind": kind, "amount": delta, "currency": currency,
-        "paid_at": paid_at, "note": request.note, "actor": actor, "reverses_payment_id": reverses_payment_id})
+        "paid_at": paid_at, "note": request.note, "actor": actor, "reverses_payment_id": reverses_payment_id,
+        "method": getattr(request, "method", None)})
     row["payment_revision"] += 1
+    row["payment_needs_review"] = False
     current = snapshot(row, await payment_rows(db, invoice_id))
     await db.execute(text("""UPDATE uploaded_invoices SET payment_revision=:revision,payment_status=:status,
-        paid_amount=:amount,paid_at=:paid_at,updated_at=NOW() WHERE id=:id"""),
+        paid_amount=:amount,paid_at=:paid_at,payment_needs_review=FALSE,updated_at=NOW() WHERE id=:id"""),
         {"id": invoice_id, "revision": row["payment_revision"], "status": current["status"],
          "amount": settled + delta, "paid_at": paid_at if settled + delta != 0 else None})
     response = {"invoice_id": invoice_id, "request_id": str(request.request_id),
@@ -319,7 +332,8 @@ async def financial_rows(db, *, conditions="1=1", params=None):
     result = await db.execute(text(f"""SELECT ui.id,ui.supplier_id,ui.shop_id,ui.direction,ui.document_type,
         ui.invoice_date,ui.due_date,ui.currency,ui.total_amount,ui.total_with_vat,ui.vat_rate,ui.vat_included,
         ui.source_paid_amount,ui.source_payment_status,ui.paid_amount,ui.payment_revision,
-        s.code AS supplier_code,s.name AS supplier_name,
+        ui.payment_assumed_unpaid,ui.payment_needs_review,
+        s.code AS supplier_code,COALESCE(ui.issuer_name,s.name) AS supplier_name,
         sh.code AS shop_code,sh.name AS shop_name,ledger.ledger_count,ledger.ledger_paid_amount,ledger.ledger_currency
         FROM uploaded_invoices ui LEFT JOIN suppliers s ON ui.supplier_id=s.id
         LEFT JOIN shops sh ON ui.shop_id=sh.id

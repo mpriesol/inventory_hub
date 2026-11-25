@@ -22,6 +22,8 @@ import { createBrowserRouter, createRoutesFromElements, RouterProvider, Route, N
 // Styles
 import './styles/design-system.css';
 
+import { SupplierPreordersPage } from './pages/SupplierPreordersPage';
+
 // Layout
 import { Layout } from './components/layout';
 
@@ -79,6 +81,8 @@ const router = createBrowserRouter(createRoutesFromElements(
 
           {/* Suppliers */}
           <Route path="/suppliers" element={<SuppliersPage />} />
+          <Route path="/supplier-preorders" element={<SupplierPreordersPage />} />
+          <Route path="/supplier-preorders/:preorderId" element={<SupplierPreordersPage />} />
           <Route path="/suppliers/sloger/b2b-test" element={<SlogerProbePage />} />
           <Route path="/suppliers/:supplier/catalog" element={<SupplierCatalogPage />} />
           <Route path="/suppliers/:supplier/feed-mapping" element={<FeedMappingPage />} />

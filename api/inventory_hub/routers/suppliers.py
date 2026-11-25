@@ -683,7 +683,8 @@ async def upload_invoice(
     """Compatibility URL, identical ingestion and privacy to canonical upload."""
     from inventory_hub.routers.invoices_unified import upload_invoice as canonical_upload
     return await canonical_upload(supplier_code=supplier, file=file, invoice_number=invoice_number,
-        invoice_date=None, due_date=None, vat_included=True, db=db)
+        invoice_date=None, due_date=None, vat_included=True, service_issuer=None, service_total=None,
+        service_currency=None, db=db)
 
 
 from inventory_hub.routers.invoices_unified import InvoiceRoute

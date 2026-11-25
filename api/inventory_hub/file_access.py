@@ -16,7 +16,7 @@ from starlette.responses import FileResponse, Response
 from starlette.staticfiles import StaticFiles
 
 
-_DOCUMENT_SUFFIXES = {".csv", ".tsv", ".xml", ".json", ".pdf", ".xlsx", ".xls", ".doc", ".docx",
+_DOCUMENT_SUFFIXES = {".csv", ".tsv", ".xml", ".isdoc", ".json", ".pdf", ".xlsx", ".xls", ".doc", ".docx",
                       ".txt", ".log", ".html", ".htm", ".feed"}
 _IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp"}
 _PRIVATE_PART = re.compile(
@@ -40,6 +40,8 @@ def _asset_location(parts: tuple[str, ...]) -> bool:
             return (area == "invoices" and parts[3] in {"raw", "pdf", "csv", "history"}
                     or area == "feeds" and parts[3] in {"raw", "xml", "csv", "converted", "samples", "mapping"}
                     or area == "imports" and parts[3] in {"upgates", "upgates_selected", "sent"})
+    if len(parts) == 7 and parts[:5] == ("service-invoices", "documents", "invoices", "raw", "archive"):
+        return bool(re.fullmatch(r"[a-f0-9]{64}", parts[5])) and parts[6].startswith("document.")
     if len(parts) >= 3 and parts[0] == "shops":
         return (len(parts) == 3 and parts[2] == "latest.csv"
                 or len(parts) >= 4 and parts[2] in {"imports", "exports", "logs"})

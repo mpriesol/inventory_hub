@@ -62,10 +62,10 @@
 .calendar-total { display: flex; flex-direction: column; font-variant-numeric: tabular-nums; }
 .calendar-total small, .calendar-invoice-amount small { display: block; font-size: .75rem; font-weight: normal; }
 .calendar-unknown-total { color: var(--color-warning); }
-.calendar-week-planning { margin: 1rem 0; }
-.calendar-week-planning details { border-bottom: 1px solid var(--color-border-subtle); padding: .7rem 0; }
-.invoice-due-calendar .calendar-week-planning summary { display: flex; flex-wrap: wrap; gap: .6rem; justify-content: space-between; color: var(--color-text-primary); cursor: pointer; }
-.calendar-week-planning summary::before { content: '+'; color: var(--color-accent); }
-.calendar-week-planning details[open] summary::before { content: '−'; }
-.calendar-week-planning summary > span:first-of-type { flex: 1; }
 .calendar-month-totals { font-size: .8rem; padding: .4rem 0 .7rem; text-align: center; min-height: 2.5rem; }
+
+.calendar-main-grid.month { grid-template-columns: minmax(104px, .85fr) repeat(7, minmax(85px, 1fr)); min-width: 720px; }
+.calendar-week-total { background: var(--color-bg-tertiary); padding: .45rem; font-size: .75rem; display: flex; flex-direction: column; gap: .25rem; }
+.calendar-day-totals, .calendar-week-total .calendar-totals { font-size: .7rem; gap: .3rem; overflow-wrap: anywhere; }
+.calendar-day-totals { padding: .15rem .35rem .35rem; }
+.calendar-total strong span { color: var(--color-text-secondary); font-weight: normal; }
