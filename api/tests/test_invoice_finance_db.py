@@ -2,6 +2,7 @@
 import asyncio
 from datetime import date
 from decimal import Decimal as D
+from pathlib import Path
 import unittest
 from uuid import uuid4
 
@@ -85,6 +86,14 @@ class InvoiceFinanceDatabaseTests(InvoiceDatabaseCase):
         self.assertIsNone(row["supplier_id"])
         self.assertTrue(row["is_service_invoice"])
         self.assertEqual((await self.current(result["id"]))["outstanding_amount"], "800.25")
+        # The production runner reapplies 033 after a service invoice exists.
+        migrations = Path(__file__).resolve().parents[2] / "infra" / "db-init"
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            for name in ("033_invoice_archive.sql", "060_invoice_workflows.sql"):
+                await raw.driver_connection.execute((migrations / name).read_text())
+        self.assertTrue(await self.scalar("SELECT is_service_invoice FROM uploaded_invoices WHERE id=:id",
+                                          {"id": result["id"]}))
         parse = invoice_completeness.parse("checklist.csv",
             ("Vystaviteľ;Číslo faktúry;Suma;Mena\nFixture Landlord;SERVICE-TEST;800,25;EUR\n"
              "Other Landlord;SERVICE-TEST;800,25;EUR\nWrong;;4;EUR\n").encode())

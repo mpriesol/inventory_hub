@@ -4,9 +4,12 @@ ALTER TABLE uploaded_invoices ADD COLUMN IF NOT EXISTS issuer_name VARCHAR(255);
 ALTER TABLE uploaded_invoices ADD COLUMN IF NOT EXISTS issuer_key VARCHAR(255);
 ALTER TABLE uploaded_invoices ADD COLUMN IF NOT EXISTS is_service_invoice BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Keep the constraint name checked by migration 033. The runner reapplies
+-- earlier migrations on each deployment, including after service uploads.
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='uploaded_invoices'::regclass
-                 AND conname='ck_invoice_archive_owner_with_service') THEN
+                 AND conname='ck_invoice_archive_owner'
+                 AND pg_get_constraintdef(oid) LIKE '%is_service_invoice%') THEN
     ALTER TABLE uploaded_invoices ADD CONSTRAINT ck_invoice_archive_owner_with_service CHECK (
       (direction='purchase' AND shop_id IS NULL AND
         ((supplier_id IS NOT NULL AND NOT is_service_invoice) OR
@@ -15,6 +18,7 @@ DO $$ BEGIN
            AND receiving_session_id IS NULL)))
       OR (direction='sale' AND supplier_id IS NULL AND shop_id IS NOT NULL AND NOT is_service_invoice));
     ALTER TABLE uploaded_invoices DROP CONSTRAINT IF EXISTS ck_invoice_archive_owner;
+    ALTER TABLE uploaded_invoices RENAME CONSTRAINT ck_invoice_archive_owner_with_service TO ck_invoice_archive_owner;
   END IF;
 END $$;
 
