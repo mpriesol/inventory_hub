@@ -142,7 +142,7 @@ In **Kontrola úplnosti faktúr**, select an issue-date period and read a CSV, X
 
 ## Vavrys documents
 
-The first validated Vavrys PDF creates its supplier entry if needed. The Czech and Slovak issuers share the commercial supplier and keep independent invoice keys. Both PDFs are sufficient for archive and goods receiving. The Slovak document's postage is part of the invoice gross and VAT recap and is excluded from the receiving CSV. Upload the matching ISDOC after the PDF, or include both in one upload batch. An attachment is accepted only when issuer, number, currency, totals and item quantities/net amounts agree. The source files are available from the invoice detail.
+The first validated Vavrys PDF creates its supplier entry if needed. The Czech and Slovak issuers share the commercial supplier. Reconciliation and goods receiving use the issuer and number as the key, even when both issuers print the same number. The archive displays the number as printed. Both PDFs are sufficient for archive and goods receiving. The Slovak document's postage is part of the invoice gross and VAT recap and is excluded from the receiving CSV. Upload the matching ISDOC after the PDF, or include both in one upload batch. An attachment is accepted only when issuer, number, currency, totals and item quantities/net amounts agree. The source files are available from the invoice detail.
 
 ## Accountant download
 

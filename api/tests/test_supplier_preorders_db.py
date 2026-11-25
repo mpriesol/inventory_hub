@@ -46,13 +46,23 @@ class SupplierPreordersDatabaseTests(InvoiceDatabaseCase):
                 receipt = await db.scalar(text("""INSERT INTO receiving_sessions
                     (warehouse_id,supplier_id,invoice_number,status) VALUES(:warehouse,:supplier,:number,'in_progress') RETURNING id"""),
                     {"warehouse": warehouse, "supplier": self.supplier_id, "number": key})
-                await db.execute(text("""INSERT INTO stock_movements(idempotency_key,product_id,warehouse_id,movement_type,
+                movement = text("""INSERT INTO stock_movements(idempotency_key,product_id,warehouse_id,movement_type,
                     quantity,reference_type,reference_id,balance_after,avg_cost_after,created_at)
                     VALUES(:key,:product,:warehouse,'RECEIVING_IN',:quantity,'receiving_session',:receipt,:balance,0,
-                        CAST(:day AS timestamptz))"""),
-                    {"key": key, "product": self.product_id, "warehouse": warehouse,
-                     "quantity": quantity, "receipt": str(receipt), "balance": 10 - remaining,
-                     "day": datetime(2026, 9, index, 12, tzinfo=timezone.utc)})
+                        CAST(:day AS timestamptz)) RETURNING id""")
+                values = {"key": key, "product": self.product_id, "warehouse": warehouse,
+                          "quantity": quantity, "receipt": str(receipt), "balance": 10 - remaining,
+                          "day": datetime(2026, 9, index, 12, tzinfo=timezone.utc)}
+                posted = await db.scalar(movement, values)
+                if index == 1:
+                    # A compensated receiving movement stays in the ledger. The
+                    # receipt's replacement alone contributes to the preorder.
+                    await db.execute(text("""INSERT INTO fifo_layers(product_id,warehouse_id,receipt_movement_id,
+                        physical_received_at,quantity_original,quantity_remaining,cost_status,provenance)
+                        VALUES(:product,:warehouse,:movement,:day,:quantity,0,'unknown',
+                            jsonb_build_object('receiving_reversal_id',CAST(:operation AS text)))"""),
+                        {**values, "movement": posted, "operation": str(uuid4())})
+                    await db.execute(movement, {**values, "key": f"{key}:r1", "day": values["day"].replace(hour=13)})
                 order = await service.detail(db, request.request_id)
                 self.assertEqual(order["lines"][0]["remaining_quantity"], Decimal(remaining))
                 await db.commit()
@@ -61,3 +71,4 @@ class SupplierPreordersDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual([row["quantity"] for row in order["lines"][0]["deliveries"]], [4, 6])
         self.assertEqual([row["received_at"].date().isoformat() for row in order["lines"][0]["deliveries"]],
                          ["2026-09-01", "2026-09-02"])
+        self.assertEqual(order["lines"][0]["deliveries"][0]["received_at"].hour, 13)

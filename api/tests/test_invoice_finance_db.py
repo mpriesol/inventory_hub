@@ -4,15 +4,19 @@ from datetime import date
 from decimal import Decimal as D
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from invoice_db_fixture import DATABASE_REQUIRED, TEST_URL, InvoiceDatabaseCase
+from inventory_hub.adapters import vavrys_invoice
+from inventory_hub.adapters.sk_profi_bike_invoice import InvoiceLine, save_receiving_invoice
+from inventory_hub.routers.receiving_db import _parse_invoice_csv
 from inventory_hub.services import invoice_archive as archive
 from inventory_hub.services import invoice_finance as finance
-from inventory_hub.services import invoice_batch_payments, invoice_completeness, invoice_upload
+from inventory_hub.services import invoice_batch_payments, invoice_completeness, invoice_processing, invoice_upload, receiving_source
 
 
 @unittest.skipUnless(TEST_URL, DATABASE_REQUIRED)
@@ -105,6 +109,41 @@ class InvoiceFinanceDatabaseTests(InvoiceDatabaseCase):
         self.assertEqual(report["found"][0]["invoice_id"], result["id"])
         self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoice_lines"), 0)
         await self.assert_no_inventory_effects()
+
+    async def test_vavrys_printed_number_is_scoped_to_its_issuer(self):
+        supplier_id = self.supplier_id
+        documents = {f'%PDF-{country}'.encode(): vavrys_invoice.VavrysInvoice('12345', date(2026, 1, 1), date(2026, 1, 15),
+            D('10.00'), D('0.00'), D('10.00'),
+            (InvoiceLine(1, 'TEST-1', 'Fixture item', D(1), D('10.00'), D(0), D('10.00'), D('10.00')),),
+            issuer_country=country) for country in ('CZ', 'SK')}
+        sources = []
+        with patch.object(vavrys_invoice, 'parse_invoice_pdf', side_effect=documents.__getitem__):
+            for content, document in documents.items():
+                generated = save_receiving_invoice(content, self.data_root, 'vavrys', parser=vavrys_invoice.parse_invoice_pdf)
+                sources.append(receiving_source.load_source(self.data_root, 'vavrys', document.key,
+                    self.data_root / generated['csv_path'], _parse_invoice_csv))
+            async with self.sessions() as db:
+                await db.execute(text("UPDATE suppliers SET code='vavrys' WHERE id=:id"), {'id': supplier_id})
+                report = await archive.reconcile_supplier(db, {'supplier_code': 'vavrys'})
+                self.assertEqual((report['created'], report['conflicts']), (2, []))
+                self.assertEqual([source.document_number for source in sources], ['cz-12345', 'sk-12345'])
+                self.assertNotEqual(sources[0].source_hash, sources[1].source_hash)
+                self.assertEqual(sources[0].csv_hash, sources[1].csv_hash)
+                receipt_id = await db.scalar(text("""INSERT INTO receiving_sessions
+                    (supplier_id,warehouse_id,invoice_number,source_hash,session_data)
+                    VALUES(:supplier,(SELECT id FROM warehouses WHERE is_default LIMIT 1),:number,:hash,
+                        jsonb_build_object('receiving_source',CAST(:proof AS jsonb))) RETURNING id"""), {
+                    'supplier': supplier_id, 'number': sources[0].document_number, 'hash': sources[0].source_hash,
+                    'proof': archive._json(sources[0].snapshot())})
+                await receiving_source.ensure_unique(db, supplier_id, sources[1], self.data_root)
+                rows = (await db.execute(text("SELECT * FROM uploaded_invoices ORDER BY source_key"))).mappings().all()
+                self.assertEqual([(row['invoice_number'], row['source_key']) for row in rows],
+                    [('12345', 'cz-12345'), ('12345', 'sk-12345')])
+                self.assertEqual([row['id'] for row in await invoice_processing._receipts(db, rows[0])], [receipt_id])
+                self.assertEqual(await invoice_processing._receipts(db, rows[1]), [])
+                index = [row for _, candidates in archive._index_entries(self.data_root, 'vavrys') for row in candidates]
+                display = await invoice_processing.project_index(db, 'vavrys', index)
+                self.assertEqual([item['archive_invoice_id'] for item in display], [row['id'] for row in rows])
 
     async def test_partial_payment_freezes_explicit_source_opening_and_keeps_exact_cents(self):
         invoice_id, _ = await self.invoice(gross="100.01", paid="20.00")

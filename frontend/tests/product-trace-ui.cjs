@@ -41,8 +41,11 @@ global.fetch=async(path, options={})=>{
  const params = url.searchParams;
  if (url.pathname === '/api/supplier-preorders') {
   assert.equal(params.get('product_id'),'4');
+  const page = Number(params.get('page') || 1);
+  if (page === 1) return reply({items:Array.from({length:20}, (_, index) => ({id:`completed-${index}`, status:'completed'})), total:21, page});
+  assert.equal(page,2);
   return reply({items:[{ id:'preorder-test', reference:'VENDOR-ORDER-2027', supplier_name:'Fixture supplier', status:'open',
-    lines:[{id:1,remaining_quantity:6,stock_unit:'pcs',expected_on:'2027-02-12'}] }]});
+    lines:[{id:1,remaining_quantity:6,stock_unit:'pcs',expected_on:'2027-02-12'}] }], total:21, page});
  }
  calls.push({path,params,options});
  assert.equal(new URL(path,dom.window.location).pathname,'/api/product-trace');assert.equal(options.method,'GET');assert(!options.body);

@@ -86,10 +86,12 @@ async def _deliveries(db, invoices):
         ids = [receipt["id"] for receipt in receipts if not invoice_processing._receipt(receipt)["reversed"]]
         if not ids:
             continue
-        movements = await records(db, """SELECT id,product_id,quantity,created_at
-            FROM stock_movements WHERE reference_type='receiving_session'
-            AND reference_id=ANY(CAST(:receipts AS text[])) AND movement_type::text='RECEIVING_IN'
-            ORDER BY created_at,id""", {"receipts": [str(id_) for id_ in ids]})
+        movements = await records(db, """SELECT m.id,m.product_id,m.quantity,m.created_at
+            FROM stock_movements m WHERE m.reference_type='receiving_session'
+            AND m.reference_id=ANY(CAST(:receipts AS text[])) AND m.movement_type::text='RECEIVING_IN'
+            AND NOT EXISTS (SELECT 1 FROM fifo_layers f WHERE f.receipt_movement_id=m.id
+                            AND f.provenance->>'receiving_reversal_id' IS NOT NULL)
+            ORDER BY m.created_at,m.id""", {"receipts": [str(id_) for id_ in ids]})
         for movement in movements:
             if movement["id"] in seen:
                 continue
@@ -103,7 +105,7 @@ async def _deliveries(db, invoices):
 async def detail(db, identifier, *, product_id=None):
     order = await _order(db, identifier)
     invoices = await records(db, """SELECT ui.id,ui.invoice_number,ui.original_filename,ui.invoice_date,ui.direction,
-            ui.supplier_id,ui.receiving_session_id,ui.source_key,ui.source_data
+            ui.supplier_id,ui.receiving_session_id,ui.source_key,ui.source_data,ui.issuer_key
         FROM supplier_preorder_invoices link JOIN uploaded_invoices ui ON ui.id=link.invoice_id
         WHERE link.preorder_id=:id ORDER BY ui.invoice_date NULLS LAST,ui.id""", {"id": identifier})
     lines = await records(db, """SELECT l.id,p.id AS product_id,p.sku,p.name,p.stock_unit,l.ordered_quantity,l.expected_on

@@ -11,9 +11,18 @@ export function SupplierPreorderInfo({ productId }: { productId: number }) {
   useEffect(() => {
     const controller = new AbortController();
     setItems([]);
-    listSupplierPreorders({ product_id: productId }, controller.signal).then(result => {
-      if (!controller.signal.aborted) setItems(result.items.filter(order => order.status === 'open'));
-    }).catch(() => { /* Continue to show the product card when planning data is unavailable. */ });
+    async function loadOpenPreorders() {
+      const open: SupplierPreorder[] = [];
+      let checked = 0;
+      for (let page = 1; !controller.signal.aborted; page++) {
+        const result = await listSupplierPreorders({ product_id: productId, page }, controller.signal);
+        open.push(...result.items.filter(order => order.status === 'open'));
+        checked += result.items.length;
+        if (!result.items.length || checked >= result.total) break;
+      }
+      if (!controller.signal.aborted) setItems(open);
+    }
+    void loadOpenPreorders().catch(() => { /* The product card can load independently of planning data. */ });
     return () => controller.abort();
   }, [productId]);
   if (!items.length) return null;

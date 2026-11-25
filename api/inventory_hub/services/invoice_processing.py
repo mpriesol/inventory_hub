@@ -10,6 +10,7 @@ import json
 from sqlalchemy import text
 
 from inventory_hub.invoice_processing_types import InvoiceProcessingPreview
+from inventory_hub.services.invoice_issuers import VAVRYS_ISSUER_KEYS, indexed_invoice_key
 from inventory_hub.services.receiving_source import lock_supplier
 
 
@@ -28,6 +29,8 @@ def _digest(value):
 
 
 def _keys(row):
+    if row.get('issuer_key') in VAVRYS_ISSUER_KEYS and row.get('source_key'):
+        return [row['source_key']]
     keys = {row.get('invoice_number'), row.get('source_key')}
     source = row.get('source_data') or {}
     candidates = source.get('index_candidates', []) if isinstance(source, dict) else []
@@ -270,7 +273,10 @@ async def project_index(db, supplier_code, entries, *, include_archived=False):
     for item in entries:
         if not isinstance(item, dict):
             continue
-        keys = {value for value in (item.get('number'), item.get('original_number'), item.get('invoice_id'))
+        source_key = indexed_invoice_key(supplier_code, item)
+        aliases = (source_key,) if supplier_code == 'vavrys' else (
+            item.get('number'), item.get('original_number'), item.get('invoice_id'))
+        keys = {value for value in aliases
                 if isinstance(value, str) and value}
         identifier = item.get('invoice_id')
         if isinstance(identifier, str) and identifier.startswith(supplier_code + ':'):
@@ -279,7 +285,6 @@ async def project_index(db, supplier_code, entries, *, include_archived=False):
         linked_ids = {row['receiving_session_id'] for row in matches if row['receiving_session_id']}
         sessions = [row for row in receipts if row['invoice_number'] in keys or row['id'] in linked_ids]
         # Retirement applies to the exact reconciliation key, not any of its aliases.
-        source_key = str(item.get('original_number') or item.get('number') or item.get('invoice_id') or '')
         value = {**item, 'invoice_archived': any(row['archived_at'] is not None for row in matches),
                  'receiving_archived': bool(sessions) and all((row['session_data'] or {}).get('receiving_archive') for row in sessions),
                  'source_archived': source_key in excluded}
