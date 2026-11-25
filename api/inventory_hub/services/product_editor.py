@@ -556,7 +556,7 @@ def _audit_values(row):
     return {key: deepcopy(row[key]) for key in ("is_active", "item_type", "stock_unit", "sku", "eans", "attributes", "image_url", "common", "variant", "warehouse", "shops", "overrides", "snapshot_hash")}
 
 
-async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-card"):
+async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-card", commit=True):
     """Resolve first; create only a reviewed local identity, never stock or a listing."""
     from inventory_hub.services.sku_policy import preview_sku, record_sku_identity, SkuPolicyError
     from inventory_hub.services.supplier_links import bind_explicit_supplier_source
@@ -654,7 +654,8 @@ async def create_card(db, payload: ProductCardCreateRequest, *, actor="manual-ca
     await db.flush()
     db.add(ProductEditorAudit(request_id=identifier, product_id=product.id, revision=row["revision"],
                              before_data=_audit_values(before) if before else {}, after_data=_audit_values(row)))
-    await db.commit()
+    if commit:
+        await db.commit()
     return result
 
 

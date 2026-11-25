@@ -133,11 +133,16 @@ Obe migrácie sú aditívne, zapojené za 055 a zabalené v API obraze. Samy nev
 
 Migrácia `059_sku_brand_management.sql` dopĺňa stav archivácie výrobcu, odkazy na dodávateľské B2B portály a tabuľku rezervovaných prefixov.
 
-Migrácia `060_invoice_workflows.sql` pridáva úhrady po dávkach, spôsob úhrady, ručné overenie a faktúry za služby. Rozširuje povolené vlastníctvo dokladu o explicitný záznam za služby s menom vystaviteľa. Historické údaje o platbách a pohyby nemení.
 Po zmene použitého prefixu si staré karty ponechajú svoj kód a výrobca svoj pôvodný identifikátor.
 Pri opakovaní migrácie 029 sa pôvodných sedem značiek dopĺňa iba pri založení novej tabuľky.
 Po prvom použití archivácie alebo zmene použitého prefixu ponechajte údaje migrácie 059
 a pri oprave nasaďte verziu, ktorá rešpektuje archív a rezervácie.
+
+### Úhrady, servisné faktúry a dodávateľské predobjednávky
+
+Migrácia `060_invoice_workflows.sql` pridáva úhrady po dávkach, spôsob úhrady, ručné overenie a faktúry za služby. Rozširuje povolené vlastníctvo dokladu o explicitný záznam za služby s menom vystaviteľa. Historické údaje o platbách a pohyby nemení.
+
+Migrácia `061_supplier_preorders.sql` pridáva dodávateľské predobjednávky, položky a väzby na faktúry. Založenie predobjednávky nevytvára skladový pohyb.
 
 V izolovanej PostgreSQL 16.2 prešlo 20. 11. 2026 všetkých 59 SQL súborov v poradí.
 Následne dvakrát prešlo všetkých 48 modulov `inventory_hub.migrate`.

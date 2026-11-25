@@ -1,3 +1,4 @@
+import { SupplierPreorderInfo } from './SupplierPreorderInfo';
 import { ProductAvailabilityOverridePanel } from './ProductAvailabilityOverridePanel';
 import { ProductAvailabilityActivity } from './ProductAvailabilityActivity';
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
@@ -358,6 +359,7 @@ export function StockCard({ productId, sku, warehouseCode, initialSection = 'ove
                 <div><dt>{c('location')}</dt><dd>{row.warehouse?.location || c('notSet')}</dd></div>
                 <div><dt>{c('typeUnit')}</dt><dd>{c(row.item_type === 'service' ? 'service' : 'goods')} / {unitLabel}</dd></div>
               </dl>
+              {row.item_type === 'stock' && <SupplierPreorderInfo productId={row.id} />}
               <ProductAvailabilityOverridePanel key={`availability-${row.id}-${childVersion}`} row={row} disabled={mutationDisabled || draftDirty || !!tool} onChanged={refreshed} onDirtyChange={dirtyCallbacks.availability} onBusyChange={busyCallbacks.availability} />
               {row.supplier_availability && <div className="stock-card__note stock-card__availability"><strong>{c('supplierAvailability')}</strong>
                 <p>{row.supplier_availability.label || c('unknown')}
