@@ -92,6 +92,8 @@ def _snapshot(row, receipts):
 
 def _blockers(row, snapshot, action):
     if action in ('process_without_stock', 'reopen'):
+        if row.get('is_service_invoice'):
+            return ['invoice_processing_service_fixed']
         if row['direction'] != 'purchase':
             return ['invoice_processing_purchase_required']
         if snapshot['archived']:

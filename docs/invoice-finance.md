@@ -45,6 +45,12 @@ Ani odpoveď HTTP 200 sama nepotvrdzuje správny výsledok. Klient kontroluje ID
 
 `known_unapplied=true` označuje preukázané odmietnutie aktuálnej operácie pred zápisom, napríklad zmenenú revíziu. Pri konflikte UUID sa tento príznak neuvádza ako pravdivý, pretože pod daným UUID už mohla byť uložená iná operácia. Staršie priame prepínanie `PATCH /invoices/{id}/payment` vracia `invoice_payment_ledger_required`; nemôže obísť históriu úhrad.
 
+## Nové nahratia, kontrola a hromadná úhrada
+
+Ručne nahratý dodávateľský doklad bez údaja o platbe má predvolene neuhradený celý známy zostatok. Staršie doklady si ponechajú svoju evidenciu. Vo Faktúrach je stav **Potrebné overenie** aj ako ručná voľba v detaile. Do kalendára započíta celkovú sumu dokladu, zostatok však označí ako neoverený. Zápis overenej úhrady stav prepočíta.
+
+Spôsob úhrady sa ukladá ku konkrétnemu záznamu v histórii. Podporuje Hotovosť, Karta SLSP, Karta TB, Prevod SLSP a Prevod TB. Pri označených dokladoch operátor potvrdí jeden dátum a prípadne spôsob úhrady. Každá platba má vlastný neuhradený zostatok a menu. Uhradené, neoverené, archivované doklady a dobropisy sú v prehľade preskočených položiek. Dávka je transakčná a opakovanie pôvodnej požiadavky obnoví jej výsledok.
+
 ## Overenie
 
 `test_invoice_finance.py` pokrýva centové zaokrúhlenie, nulové hodnoty, neznámu sadzbu/úhradu, viaceré meny, čiastočné úhrady a oba zdrojové zápisy dobropisu. `test_invoice_finance_db.py` overuje PostgreSQL transakcie, súbeh, UUID, revízie, zmrazenie počiatočného stavu, opravy a zákaz úprav histórie. `test_invoice_routes.py` overuje prístup obsluhy, bezpečné chybové odpovede a rozhrania. Databázové prípady vyžadujú izolovanú lokálnu databázu `*_catalog_test`; ich preskočenie nie je potvrdením funkčnosti migrácie.

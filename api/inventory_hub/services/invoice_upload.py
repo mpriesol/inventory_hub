@@ -24,7 +24,7 @@ from inventory_hub.services.receiving_source import lock_supplier
 from inventory_hub.settings import settings
 
 logger = logging.getLogger(__name__)
-ALLOWED_EXTENSIONS = {'.pdf', '.csv', '.tsv', '.xlsx', '.xls', '.doc', '.docx', '.xml', '.txt', '.jpg', '.jpeg', '.png'}
+ALLOWED_EXTENSIONS = {'.pdf', '.csv', '.tsv', '.xlsx', '.xls', '.doc', '.docx', '.xml', '.isdoc', '.txt', '.jpg', '.jpeg', '.png'}
 
 
 def _number_from_filename(filename):
@@ -122,12 +122,23 @@ def _detect_pdf_supplier(filename, content):
 
 
 async def upload(db, *, supplier_code, filename, content, invoice_number=None,
-                 invoice_date=None, due_date=None, vat_included=True, expected_id=None, actor='operator'):
+                 invoice_date=None, due_date=None, vat_included=True, expected_id=None, actor='operator',
+                 service_issuer=None, service_total=None, service_currency=None):
     if not filename or Path(filename).suffix.lower() not in ALLOWED_EXTENSIONS:
         raise archive.InvoiceArchiveError('invoice_file_type_unsupported', 422)
     if not content or len(content) > archive.MAX_FILE:
         raise archive.InvoiceArchiveError('invoice_file_invalid', 422)
+    from inventory_hub.services import invoice_extra_upload
+
     suffix = Path(filename).suffix.lower()
+    if service_issuer is not None:
+        return await invoice_extra_upload.save_service_invoice(db, filename=filename, content=content,
+            issuer=service_issuer, invoice_number=invoice_number, invoice_date=invoice_date, due_date=due_date,
+            total=service_total, currency=service_currency, actor=actor)
+    if suffix == '.isdoc':
+        if supplier_code not in (None, '', 'vavrys'):
+            raise archive.InvoiceArchiveError('invoice_vavrys_isdoc_invalid', 422)
+        return await invoice_extra_upload.attach_vavrys_isdoc(db, filename=filename, content=content)
     automatic = not supplier_code
     if automatic:
         if suffix != '.pdf':
@@ -135,6 +146,8 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
         if not content.startswith(b'%PDF-'):
             raise archive.InvoiceArchiveError('invoice_file_invalid', 422)
         supplier_code, metadata, lines = await asyncio.to_thread(_detect_pdf_supplier, filename, content)
+    if supplier_code == 'vavrys' and automatic:
+        await asyncio.to_thread(invoice_extra_upload.ensure_vavrys_config)
     supplier = await archive.resolve_supplier(db, supplier_code)
     supplier_id, code = supplier.id, supplier.code
     try:
@@ -148,7 +161,11 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
         metadata, lines, parsed_csv = await asyncio.to_thread(_spreadsheet, code, filename, content)
     elif not automatic:
         metadata, lines = await asyncio.to_thread(archive.parse_uploaded_document, code, filename, content)
+    issuer = metadata.pop('issuer_name', None)
+    issuer_document_key = metadata.pop('issuer_document_key', None)
     verified_pdf = bool(lines and suffix == '.pdf' and code in invoice_pdf.PARSERS)
+    if code == 'vavrys' and suffix == '.pdf' and not verified_pdf:
+        raise archive.InvoiceArchiveError('invoice_vavrys_pdf_unrecognized', 422)
     if expected_id is not None and not verified_pdf:
         raise archive.InvoiceArchiveError('invoice_parse_failed', 422)
     for key, value in supplied.items():
@@ -160,16 +177,16 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
     if parsed_csv is not None and not metadata.get('invoice_number'):
         raise archive.InvoiceArchiveError('invoice_number_required_for_receiving', 422)
     await lock_supplier(db, supplier_id)
-    if await archive.source_is_archived(db, supplier_id, metadata.get('invoice_number')):
+    if await archive.source_is_archived(db, supplier_id, issuer_document_key or metadata.get('invoice_number')):
         raise archive.InvoiceArchiveError('invoice_source_archived')
     result = await archive.ingest_invoice(db, direction='purchase', source_kind='upload',
-        source_key='sha256:' + hashlib.sha256(content).hexdigest(), supplier_id=supplier_id,
+        source_key=issuer_document_key or 'sha256:' + hashlib.sha256(content).hexdigest(), supplier_id=supplier_id, issuer_name=issuer,
         metadata=metadata, lines=lines, files=[{'filename': filename, 'content': content}],
         source_data={'kind': 'manual-upload'}, actor=actor, expected_id=expected_id,
         complete_unparsed_pdf=verified_pdf and code == 'northfinder')
     if not result['replayed']:
         proven_net = verified_pdf or parsed_csv is not None
-        await db.execute(text('UPDATE uploaded_invoices SET vat_included=:included WHERE id=:id'),
+        await db.execute(text('UPDATE uploaded_invoices SET vat_included=:included, payment_assumed_unpaid=TRUE WHERE id=:id'),
                          {'id': result['id'], 'included': False if proven_net else vat_included})
     # Preserve original/source facts regardless of preparation. Exact original
     # identity makes a retry safe; preparation failure is a partial result.
@@ -187,7 +204,7 @@ async def upload(db, *, supplier_code, filename, content, invoice_number=None,
             # Archiving a source does not necessarily archive its document.
             # The first commit released the supplier fence, so recheck before
             # publishing any receiving file, while retaining the saved original.
-            if await archive.source_is_archived(db, supplier_id, metadata.get('invoice_number')):
+            if await archive.source_is_archived(db, supplier_id, issuer_document_key or metadata.get('invoice_number')):
                 issues.append('invoice_source_archived')
             elif state and (state['archived_at'] is not None or state['processing_status'] != 'unprocessed'):
                 issues.append('invoice_not_available_for_receiving')
