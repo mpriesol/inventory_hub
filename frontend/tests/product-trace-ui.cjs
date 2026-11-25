@@ -37,7 +37,17 @@ function result(params) {
 }
 const calls=[];let deferred;
 global.fetch=async(path, options={})=>{
- const params=new URL(path,dom.window.location).searchParams;calls.push({path,params,options});
+ const url = new URL(path,dom.window.location);
+ const params = url.searchParams;
+ if (url.pathname === '/api/supplier-preorders') {
+  assert.equal(params.get('product_id'),'4');
+  const page = Number(params.get('page') || 1);
+  if (page === 1) return reply({items:Array.from({length:20}, (_, index) => ({id:`completed-${index}`, status:'completed'})), total:21, page});
+  assert.equal(page,2);
+  return reply({items:[{ id:'preorder-test', reference:'VENDOR-ORDER-2027', supplier_name:'Fixture supplier', status:'open',
+    lines:[{id:1,remaining_quantity:6,stock_unit:'pcs',expected_on:'2027-02-12'}] }], total:21, page});
+ }
+ calls.push({path,params,options});
  assert.equal(new URL(path,dom.window.location).pathname,'/api/product-trace');assert.equal(options.method,'GET');assert(!options.body);
  assert.equal(options.cache,'no-store');assert(options.headers.Authorization.startsWith('Bearer synthetic-'));
  if(params.get('code')==='FAIL')return reply({detail:{code:'product_trace_selection_invalid'}},400);
@@ -51,6 +61,7 @@ async function render(entry='/product-trace') {router=createMemoryRouter([{path:
  await act(async()=>{unlockHub('synthetic-trace-token');await tick();});
  assert.equal(calls.at(-1).params.get('code'),'0001234500000','EAN leading zeros are preserved in deep links');
  assert(document.querySelector('img[src="https://images.example.test/product.jpg"]'));
+ assert(document.querySelector('a[href="/supplier-preorders/preorder-test"]').closest('li').textContent.includes('6'));
  assert(document.querySelector('a[href="https://www.biketrek.sk/p/synthetic"]'));
  assert(document.querySelector('a[href="https://admin.example.test/product/4"]'));
  assert(document.body.textContent.includes(t('salesScope')),'Sales are explicitly limited to the Hub ledger');
