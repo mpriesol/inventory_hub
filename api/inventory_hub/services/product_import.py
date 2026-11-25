@@ -24,7 +24,7 @@ from inventory_hub.product_import_models import ProductImportDraft
 from inventory_hub.product_import_types import DraftRevision, ImportValues
 from inventory_hub.services import ai_content, catalog_import
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
-from inventory_hub.services.catalog_html import publication_safety
+from inventory_hub.services.catalog_html import clean_description, publication_safety
 from inventory_hub.services.catalog_identity import parent_shop_code
 from inventory_hub.services.catalog_merchandising import availability_policy, category_chain, resolve_catalog_availability
 from inventory_hub.services.identifiers import ProductIdentifierService
@@ -379,6 +379,15 @@ def to_source(row):
         'variant_attributes': v.variant_attributes, 'prices': prices})
 
 
+def active_supplier_description_fields(row):
+    if row['source'].get('supplier') != 'paul-lange':
+        return ()
+    from inventory_hub.services.ai_content_validation import has_active_html
+    return tuple(key for key in ('description_html', 'short_description')
+                 if row['provenance'].get(key) in ('feed', 'mapping', 'invoice')
+                 and key not in row['manual_fields'] and has_active_html(row['values'][key]))
+
+
 def validate_rows(document):
     rows = document['rows']
     importing = [r for r in rows if not link_only(r)]
@@ -394,6 +403,8 @@ def validate_rows(document):
             row['hub_errors'] = []
             row['warnings'] = sorted(set(row.get('warnings', [])) | {'existing_card_link_only'})
             continue
+        for field in active_supplier_description_fields(row):
+            row['values'][field] = clean_description(row['values'][field])
         source = to_source(row)
         row['errors'] = list(source.import_blockers) + (['stock_feed_only'] if 'stock_feed_only' in source.warnings else [])
         row['warnings'] = list(source.warnings)
@@ -531,10 +542,13 @@ async def rechecked_document(db, draft):
                and (row.get('provenance', {}).get('sku_identity') in AUTO_SKU_SOURCES
                     or set((row.get('sku_preview') or {}).get('reasons', ()))
                        & {'sku_identity_required', 'sku_brand_unregistered', 'sku_brand_archived'})}
-    if not pending or draft.status != 'draft' or publication_previews(draft):
+    if not pending and not any(active_supplier_description_fields(row) for row in document['rows'] if not link_only(row)):
+        return document
+    if draft.status != 'draft' or publication_previews(draft):
         return document
     projected = deepcopy(document)
-    await prepare_sku_rows(db, draft, projected, row_ids=pending)
+    if pending:
+        await prepare_sku_rows(db, draft, projected, row_ids=pending)
     validate_rows(projected)
     return projected
 
