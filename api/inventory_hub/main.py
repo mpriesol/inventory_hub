@@ -284,6 +284,8 @@ if settings.USE_POSTGRES:
     app.include_router(order_processing_router)
     from inventory_hub.routers.catalog import router as catalog_router
     app.include_router(catalog_router)
+    from inventory_hub.routers.supplier_preorders import router as supplier_preorders_router
+    app.include_router(supplier_preorders_router)
     from inventory_hub.routers.feed_mapping import router as feed_mapping_router
     from inventory_hub.routers.product_import import router as product_import_router
     app.include_router(feed_mapping_router)

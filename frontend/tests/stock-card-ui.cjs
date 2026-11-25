@@ -67,6 +67,7 @@ global.fetch = async (url, request = {}) => {
   assert(path.startsWith('/api/'), 'Only synthetic Hub APIs are used');
   assert.equal(request.cache, 'no-store'); assert.equal(request.credentials, 'same-origin');
   if (request.method === 'GET') {
+    if (path === '/api/supplier-preorders') return reply({ items: [] });
     reads.push({ path, query: parsed.search });
     if (path === '/api/settings/catalogs/availabilities') return reply({ items: [{ id: 1, label: 'SKLADOM', is_active: true, sort_order: 0, revision: 1 }] });
     if (path === '/api/product-editor/options' || path === '/api/fifo/options') return reply(options);
