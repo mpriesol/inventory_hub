@@ -41,7 +41,7 @@ async def collect(plan):
                 seen_uuids.add(entry["uuid"])
                 seen_numbers.add(entry["order_number"])
                 previous_time = updated
-            count += len(data["entries"])
+            count += data.get("raw_count", len(data["entries"]))
             async with get_session_context() as db:
                 await service.save_page(db, plan["id"], data["entries"])
             if not data["has_more"]:
