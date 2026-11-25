@@ -192,6 +192,11 @@ def _load_source(root, supplier, invoice_number, path, parse):
                 or raw_csv != invoice.csv_bytes()):
             raise ReceivingSourceError("receiving_source_changed")
         source_hash = _digest((supplier + ":pdf:" + invoice.fingerprint()).encode())
+        if supplier == "vavrys":
+            if entry.get("number") != invoice.key or invoice_number != invoice.key:
+                raise ReceivingSourceError("receiving_source_changed")
+            number = invoice.key
+            source_hash = _digest(f"{supplier}:pdf:{number}:{invoice.fingerprint()}".encode())
         adapter = supplier + "_pdf"
     elif supplier == "northfinder" and original.suffix.lower() in ('.xls', '.xlsx'):
         from inventory_hub.adapters.northfinder_xlsx_parser import validated_receiving_rows

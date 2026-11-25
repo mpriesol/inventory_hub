@@ -5207,6 +5207,56 @@
     "feedTruncated": "Showing the first 100 matches. Refine the code or name."
   },
   "invoiceArchive": {
+    "serviceDocument": "Service invoice",
+    "issuer": "Issuer",
+    "isdocHelp": "The Vavrys ISDOC is linked to its PDF after matching the lines and totals.",
+    "isdocAccepted": "ISDOC attached to the invoice.",
+    "completeness": {
+      "title": "Invoice completeness check",
+      "help": "Upload CSV, XLSX or a text PDF with issuer and invoice number columns. Issue date, amount and currency are optional.",
+      "file": "Checklist",
+      "preview": "Preview rows",
+      "compare": "Compare with Hub",
+      "failed": "The checklist could not be processed.",
+      "issues": {
+        "unreadable": "Unreadable value",
+        "incomplete": "Issuer or number missing",
+        "duplicate": "Duplicate row",
+        "outside_period": "Outside the period",
+        "ambiguous": "Multiple matches",
+        "date": "Issue date differs or is unknown",
+        "currency": "Currency differs or is unknown",
+        "amount": "Amount differs or cannot be verified"
+      },
+      "found": "Found",
+      "missing": "Missing in Hub",
+      "review": "Needs review",
+      "row": "Row",
+      "issuer": "Issuer",
+      "number": "Number",
+      "date": "Issue date",
+      "amount": "Amount",
+      "reason": "Result"
+    },
+    "paymentMethod": "Payment method",
+    "paymentMethods": {
+      "cash": "Cash",
+      "card_slsp": "SLSP card",
+      "card_tb": "TB card",
+      "transfer_slsp": "SLSP bank transfer",
+      "transfer_tb": "TB bank transfer"
+    },
+    "batchPayment": {
+      "action": "Record payment",
+      "help": "Selected invoices: {{count}}. Each payment uses the current outstanding balance.",
+      "result": "Payments recorded: {{paid}}. Invoices skipped: {{skipped}}.",
+      "reasons": {
+        "paid": "Paid",
+        "unavailable": "Unavailable",
+        "needs_review": "Needs verification",
+        "credit": "Credit note"
+      }
+    },
     "title": "Invoices",
     "subtitle": "Supplier invoices, shop documents and payment records in one place.",
     "direction": "Document direction",
@@ -5237,7 +5287,7 @@
     "noChartData": "No data for this overview yet.",
     "status": {
       "all": "All",
-      "unknown": "Unverified",
+      "unknown": "Needs verification",
       "unpaid": "Unpaid",
       "partial": "Partially paid",
       "paid": "Paid",
@@ -5458,6 +5508,17 @@
         "restore": "Return the document to active lists and totals. Its previous processing and payment facts remain intact; a linked receiving session is restored separately."
       },
       "errors": {
+      "invoice_service_fields_required": "Fill in the missing issuer, number, dates, total or currency.",
+      "invoice_service_already_exists": "An invoice with this issuer and number already exists.",
+      "invoice_vavrys_pdf_required": "Upload the matching Vavrys PDF invoice first.",
+      "invoice_vavrys_isdoc_invalid": "The ISDOC file could not be verified.",
+      "invoice_vavrys_isdoc_mismatch": "The ISDOC and PDF differ in lines or totals.",
+      "invoice_vavrys_pdf_unrecognized": "The PDF does not match a recognised Vavrys invoice.",
+      "invoice_checklist_format": "Use CSV, Excel XLSX or a text PDF.",
+      "invoice_checklist_file_size": "Choose a non-empty file up to 8 MB.",
+      "invoice_checklist_too_many_rows": "Split the checklist into batches of no more than 500 rows.",
+      "invoice_checklist_unreadable": "The checklist could not be read.",
+      "invoice_checklist_no_rows": "No rows with issuer and invoice number columns were found.",
         "invoice_not_found": "This invoice no longer exists.",
         "invoice_processing_changed": "The invoice or its receiving session changed. Refresh the document and prepare a new preview.",
         "invoice_processing_purchase_required": "This processing action is available only for supplier invoices.",
@@ -5490,6 +5551,17 @@
     }
   },
   "invoiceCalendar": {
+    "sumMode": "Show amounts",
+    "sumModes": {
+      "both": "Total / Outstanding",
+      "remaining": "Outstanding only",
+      "gross": "Total only"
+    },
+    "sumLabel": {
+      "gross": "Total",
+      "remaining": "Outstanding"
+    },
+    "weekNumber": "Week {{count}}",
     "title": "Due date calendar",
     "help": "Due dates of all invoices matching the applied filters. Select an invoice to open its details.",
     "view": "Calendar view",

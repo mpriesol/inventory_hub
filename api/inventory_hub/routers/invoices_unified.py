@@ -6,12 +6,13 @@ Upload → Save file + DB record → List in /invoices
 receiving_sessions is created only when "Príjem" workflow starts.
 """
 from __future__ import annotations
+import asyncio
 import re
 from pathlib import Path
 from datetime import datetime, date
 from decimal import Decimal
 from enum import Enum
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form, Request
@@ -25,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 from inventory_hub.database import get_session
+from inventory_hub.services import invoice_completeness
+from inventory_hub.services import invoice_batch_payments as batch_payments
 from inventory_hub.services import invoice_finance as finance
 from inventory_hub.services import invoice_processing as processing
 from inventory_hub.invoice_processing_types import InvoiceProcessingApply, InvoiceProcessingPreview
@@ -77,6 +80,7 @@ class InvoiceUpdateRequest(BaseModel):
     vat_included: Optional[bool] = None
     items_count: Optional[int] = Field(default=None, ge=0)
     notes: Optional[str] = None
+    payment_needs_review: Optional[bool] = None
 
     @field_validator("total_amount", "vat_rate")
     @classmethod
@@ -165,6 +169,9 @@ async def upload_invoice(
     invoice_date: Optional[str] = Form(None),
     due_date: Optional[str] = Form(None),
     vat_included: bool = Form(True),
+    service_issuer: Annotated[str | None, Form()] = None,
+    service_total: Annotated[str | None, Form()] = None,
+    service_currency: Annotated[str | None, Form()] = None,
     db: AsyncSession = Depends(get_session),
 ):
     """Canonical supplier upload, shared by every frontend entry point."""
@@ -174,10 +181,26 @@ async def upload_invoice(
     try:
         return await invoice_upload.upload(db, supplier_code=supplier_code,
             filename=file.filename, content=content, invoice_number=invoice_number,
-            invoice_date=invoice_date, due_date=due_date, vat_included=vat_included)
+            invoice_date=invoice_date, due_date=due_date, vat_included=vat_included,
+            service_issuer=service_issuer, service_total=service_total, service_currency=service_currency)
     except InvoiceArchiveError as error:
         await db.rollback()
         raise HTTPException(error.status, detail={"code": error.code, "known_unapplied": True}) from None
+
+
+@router.post("/completeness/preview")
+async def preview_checklist(file: UploadFile = File(...)):
+    from inventory_hub.services.invoice_archive import InvoiceArchiveError
+    content = await file.read(invoice_completeness.MAX_CHECKLIST_BYTES + 1)
+    try:
+        return await asyncio.to_thread(invoice_completeness.parse, file.filename or "", content)
+    except InvoiceArchiveError as error:
+        raise HTTPException(error.status, detail={"code": error.code}) from None
+
+
+@router.post("/completeness/compare")
+async def compare_checklist(payload: invoice_completeness.ChecklistRequest, db: AsyncSession = Depends(get_session)):
+    return await invoice_completeness.compare(db, payload)
 
 
 @router.post("/{invoice_id}/reparse-northfinder-pdf")
@@ -236,7 +259,7 @@ async def list_invoices(
 
     if f_supplier:
         owner = "s" if direction == "purchase" else "sh"
-        conditions.append(f"({owner}.name ILIKE :supplier OR {owner}.code ILIKE :supplier)")
+        conditions.append(f"({owner}.name ILIKE :supplier OR {owner}.code ILIKE :supplier OR ui.issuer_name ILIKE :supplier)")
         params["supplier"] = f"%{f_supplier}%"
     
     if date_from:
@@ -301,7 +324,7 @@ async def list_invoices(
         "invoice_date": "ui.invoice_date",
         "due_date": "ui.due_date",
         "total_amount": "ui.total_amount",
-        "supplier_name": "COALESCE(s.name,sh.name,sh.code)",
+        "supplier_name": "COALESCE(ui.issuer_name,s.name,sh.name,sh.code)",
         "created_at": "ui.created_at",
         "original_filename": "ui.original_filename",
         "receiving_status": "COALESCE(rs.status,'not_started')",
@@ -339,8 +362,8 @@ async def list_invoices(
             ui.id,
             ui.supplier_id,
             s.code as supplier_code,
-            s.name as supplier_name,
-            ui.direction, ui.document_type, ui.source_kind, ui.payment_revision,
+            COALESCE(ui.issuer_name,s.name) as supplier_name,
+            ui.direction, ui.document_type, ui.source_kind, ui.payment_revision,ui.is_service_invoice,
             ui.processing_status, ui.processing_revision, ui.archived_at,
             sh.code as shop_code, sh.name as shop_name,
             ui.original_filename,
@@ -404,6 +427,7 @@ async def list_invoices(
             "direction": row.direction,
             "document_type": row.document_type,
             "source_kind": row.source_kind,
+            "is_service_invoice": row.is_service_invoice,
             "payment_revision": row.payment_revision,
             "processing_status": row.processing_status,
             "processing_revision": row.processing_revision,
@@ -466,7 +490,7 @@ async def get_invoice_detail(invoice_id: int, db: AsyncSession = Depends(get_ses
         SELECT 
             ui.*,
             s.code as supplier_code,
-            s.name as supplier_name,
+            COALESCE(ui.issuer_name,s.name) as supplier_name,
             sh.code as shop_code,
             sh.name as shop_name,
             COALESCE(rs.status::text, 'not_started') as receiving_status,
@@ -534,6 +558,9 @@ async def get_invoice_detail(invoice_id: int, db: AsyncSession = Depends(get_ses
         })
     
     financial = await finance.detail(db, row._mapping)
+    files = (await db.execute(text("""SELECT id,filename,file_type FROM invoice_files
+        WHERE invoice_id=:id AND role='original' AND file_path<>:primary ORDER BY id"""),
+        {"id": invoice_id, "primary": row.file_path})).mappings().all()
     return {
         "id": row.id,
         "supplier_id": row.supplier_id,
@@ -543,6 +570,8 @@ async def get_invoice_detail(invoice_id: int, db: AsyncSession = Depends(get_ses
         "shop_name": row.shop_name,
         "direction": row.direction,
         "source_kind": row.source_kind,
+        "is_service_invoice": row.is_service_invoice,
+        "files": [dict(file) for file in files],
         "document_type": row.document_type,
         "payment_revision": row.payment_revision,
         "finance": financial,
@@ -598,6 +627,17 @@ async def download_invoice(invoice_id: int, db: AsyncSession = Depends(get_sessi
 
 
 
+@router.get("/{invoice_id}/files/{file_id}")
+async def download_invoice_file(invoice_id: int, file_id: int, db: AsyncSession = Depends(get_session)):
+    row = (await db.execute(text("""SELECT filename,file_path FROM invoice_files
+        WHERE invoice_id=:invoice AND id=:file AND role='original'"""),
+        {"invoice": invoice_id, "file": file_id})).mappings().first()
+    if row is None:
+        raise HTTPException(404, "Invoice file not found")
+    target = stored_document_path(settings.INVENTORY_DATA_ROOT, row["file_path"])
+    return document_response(target, filename=row["filename"])
+
+
 async def _finance_call(db, operation, *, commit=False):
     try:
         response = await operation
@@ -627,6 +667,17 @@ async def update_invoice(invoice_id: int, request: InvoiceUpdateRequest, db: Asy
 async def update_payment_status(invoice_id: int, request: PaymentUpdateRequest, db: AsyncSession = Depends(get_session)):
     """A status flag cannot replace a recorded settlement or its reversal."""
     raise HTTPException(409, detail={"code": "invoice_payment_ledger_required", "known_unapplied": True})
+
+
+@router.post("/payments/batch")
+async def record_invoice_payments(payload: batch_payments.BatchPaymentRequest, request: Request,
+                                  db: AsyncSession = Depends(get_session)):
+    return await _finance_call(db, batch_payments.apply(db, payload, actor=_actor(request)), commit=True)
+
+
+@router.get("/payments/batch/{request_id}")
+async def batch_payment_result(request_id: UUID, db: AsyncSession = Depends(get_session)):
+    return await _finance_call(db, batch_payments.result(db, request_id))
 
 
 @router.post("/{invoice_id}/payments")

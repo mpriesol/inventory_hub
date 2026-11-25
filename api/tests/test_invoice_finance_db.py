@@ -2,15 +2,21 @@
 import asyncio
 from datetime import date
 from decimal import Decimal as D
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from invoice_db_fixture import DATABASE_REQUIRED, TEST_URL, InvoiceDatabaseCase
+from inventory_hub.adapters import vavrys_invoice
+from inventory_hub.adapters.sk_profi_bike_invoice import InvoiceLine, save_receiving_invoice
+from inventory_hub.routers.receiving_db import _parse_invoice_csv
 from inventory_hub.services import invoice_archive as archive
 from inventory_hub.services import invoice_finance as finance
+from inventory_hub.services import invoice_batch_payments, invoice_completeness, invoice_processing, invoice_upload, receiving_source
 
 
 @unittest.skipUnless(TEST_URL, DATABASE_REQUIRED)
@@ -55,6 +61,89 @@ class InvoiceFinanceDatabaseTests(InvoiceDatabaseCase):
         with self.assertRaises(finance.FinanceError) as error:
             await self.apply(invoice_id, request, reverse=reverse)
         self.assertEqual(error.exception.code, code)
+
+    async def test_batch_records_only_verified_outstanding_and_preserves_replay(self):
+        partial, _ = await self.invoice(gross="100.01", paid="30.00")
+        settled, _ = await self.invoice(gross="80.00", paid="80.00")
+        review, _ = await self.invoice(gross="12.00")
+        await self.metadata(review, {"payment_needs_review": True}, 0)
+        request = invoice_batch_payments.BatchPaymentRequest(request_id=uuid4(),
+            invoice_ids=[settled, review, partial], paid_date=date(2026, 1, 10), method="transfer_tb")
+        for attempt in range(2):
+            async with self.sessions() as db:
+                result = await invoice_batch_payments.apply(db, request, actor="fixture")
+                await db.commit()
+            self.assertEqual(result["paid"], [{"invoice_id": partial, "amount": "70.01", "currency": "EUR"}])
+            self.assertEqual({row["reason"] for row in result["skipped"]}, {"paid", "needs_review"})
+        self.assertEqual((await self.current(partial))["payments"][-1]["method"], "transfer_tb")
+        self.assertEqual((await self.current(review))["status"], "unknown")
+        self.assertIsNone((await self.current(review))["outstanding_amount"])
+        self.assertEqual(await self.scalar("SELECT count(*) FROM invoice_payments WHERE kind='payment'"), 1)
+        await self.assert_no_inventory_effects()
+
+    async def test_service_invoice_has_no_supplier_and_is_found_in_checklist(self):
+        async with self.sessions() as db:
+            result = await invoice_upload.upload(db, supplier_code=None, filename="service.txt",
+                content=b"Synthetic service invoice", invoice_number="SERVICE-TEST", invoice_date="2026-01-12",
+                due_date="2026-02-01", service_issuer="Fixture Landlord", service_total="800,25", service_currency="EUR")
+        row = (await self.rows("SELECT supplier_id,is_service_invoice FROM uploaded_invoices"))[0]
+        self.assertIsNone(row["supplier_id"])
+        self.assertTrue(row["is_service_invoice"])
+        self.assertEqual((await self.current(result["id"]))["outstanding_amount"], "800.25")
+        # The production runner reapplies 033 after a service invoice exists.
+        migrations = Path(__file__).resolve().parents[2] / "infra" / "db-init"
+        async with self.engine.begin() as connection:
+            raw = await connection.get_raw_connection()
+            for name in ("033_invoice_archive.sql", "060_invoice_workflows.sql"):
+                await raw.driver_connection.execute((migrations / name).read_text())
+        self.assertTrue(await self.scalar("SELECT is_service_invoice FROM uploaded_invoices WHERE id=:id",
+                                          {"id": result["id"]}))
+        parse = invoice_completeness.parse("checklist.csv",
+            ("Vystaviteľ;Číslo faktúry;Suma;Mena\nFixture Landlord;SERVICE-TEST;800,25;EUR\n"
+             "Other Landlord;SERVICE-TEST;800,25;EUR\nWrong;;4;EUR\n").encode())
+        request = invoice_completeness.ChecklistRequest.model_validate(
+            {"date_from": "2026-01-01", "date_to": "2026-01-31", "rows": parse["rows"]})
+        async with self.sessions() as db:
+            report = await invoice_completeness.compare(db, request)
+        self.assertEqual([len(report[key]) for key in ("found", "missing", "review")], [1, 1, 1])
+        self.assertEqual(report["found"][0]["invoice_id"], result["id"])
+        self.assertEqual(await self.scalar("SELECT count(*) FROM uploaded_invoice_lines"), 0)
+        await self.assert_no_inventory_effects()
+
+    async def test_vavrys_printed_number_is_scoped_to_its_issuer(self):
+        supplier_id = self.supplier_id
+        documents = {f'%PDF-{country}'.encode(): vavrys_invoice.VavrysInvoice('12345', date(2026, 1, 1), date(2026, 1, 15),
+            D('10.00'), D('0.00'), D('10.00'),
+            (InvoiceLine(1, 'TEST-1', 'Fixture item', D(1), D('10.00'), D(0), D('10.00'), D('10.00')),),
+            issuer_country=country) for country in ('CZ', 'SK')}
+        sources = []
+        with patch.object(vavrys_invoice, 'parse_invoice_pdf', side_effect=documents.__getitem__):
+            for content, document in documents.items():
+                generated = save_receiving_invoice(content, self.data_root, 'vavrys', parser=vavrys_invoice.parse_invoice_pdf)
+                sources.append(receiving_source.load_source(self.data_root, 'vavrys', document.key,
+                    self.data_root / generated['csv_path'], _parse_invoice_csv))
+            async with self.sessions() as db:
+                await db.execute(text("UPDATE suppliers SET code='vavrys' WHERE id=:id"), {'id': supplier_id})
+                report = await archive.reconcile_supplier(db, {'supplier_code': 'vavrys'})
+                self.assertEqual((report['created'], report['conflicts']), (2, []))
+                self.assertEqual([source.document_number for source in sources], ['cz-12345', 'sk-12345'])
+                self.assertNotEqual(sources[0].source_hash, sources[1].source_hash)
+                self.assertEqual(sources[0].csv_hash, sources[1].csv_hash)
+                receipt_id = await db.scalar(text("""INSERT INTO receiving_sessions
+                    (supplier_id,warehouse_id,invoice_number,source_hash,session_data)
+                    VALUES(:supplier,(SELECT id FROM warehouses WHERE is_default LIMIT 1),:number,:hash,
+                        jsonb_build_object('receiving_source',CAST(:proof AS jsonb))) RETURNING id"""), {
+                    'supplier': supplier_id, 'number': sources[0].document_number, 'hash': sources[0].source_hash,
+                    'proof': archive._json(sources[0].snapshot())})
+                await receiving_source.ensure_unique(db, supplier_id, sources[1], self.data_root)
+                rows = (await db.execute(text("SELECT * FROM uploaded_invoices ORDER BY source_key"))).mappings().all()
+                self.assertEqual([(row['invoice_number'], row['source_key']) for row in rows],
+                    [('12345', 'cz-12345'), ('12345', 'sk-12345')])
+                self.assertEqual([row['id'] for row in await invoice_processing._receipts(db, rows[0])], [receipt_id])
+                self.assertEqual(await invoice_processing._receipts(db, rows[1]), [])
+                index = [row for _, candidates in archive._index_entries(self.data_root, 'vavrys') for row in candidates]
+                display = await invoice_processing.project_index(db, 'vavrys', index)
+                self.assertEqual([item['archive_invoice_id'] for item in display], [row['id'] for row in rows])
 
     async def test_partial_payment_freezes_explicit_source_opening_and_keeps_exact_cents(self):
         invoice_id, _ = await self.invoice(gross="100.01", paid="20.00")

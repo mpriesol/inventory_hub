@@ -10,6 +10,8 @@ import {
   invoiceArchiveDefaults, invoiceArchiveQuery, getInvoiceArchiveStatus, syncShopInvoiceArchive,
 } from '../api/invoiceArchive';
 import { invoiceDate, invoiceError, invoiceMoney, invoiceSourceDiagnostic, InvoicePaymentBadge } from './invoiceArchiveUi';
+import { InvoiceCompleteness } from '../components/InvoiceCompleteness';
+import { InvoiceBatchPayments } from '../components/InvoiceBatchPayments';
 import { InvoiceDueCalendar } from '../components/InvoiceDueCalendar';
 import { InvoiceUploadModal } from '../components/InvoiceUploadModal';
 import './invoiceArchive.css';
@@ -86,6 +88,7 @@ export function InvoicesPage() {
   const [loading, setLoading] = useState(true);
   const [statsError, setStatsError] = useState(false);
   const [showDashboard, setShowDashboard] = useState(false);
+  const [showCompleteness, setShowCompleteness] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
@@ -228,7 +231,8 @@ export function InvoicesPage() {
       <BarChart3 size={16} />{t(showDashboard ? 'invoiceArchive.hideSummary' : 'invoiceArchive.showSummary')}{showDashboard ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
     </button>{applied.direction === 'purchase' && <button type="button" className="quiet" data-testid="invoice-calendar-toggle" aria-expanded={showCalendar} aria-controls="invoice-due-planning" onClick={() => setShowCalendar(value => !value)}>
       {t(showCalendar ? 'invoiceCalendar.hide' : 'invoiceCalendar.show')}{showCalendar ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-    </button>}</div>
+    </button>}{applied.direction === 'purchase' && <button type="button" aria-expanded={showCompleteness} onClick={() => setShowCompleteness(value => !value)}>{t('invoiceArchive.completeness.title')}</button>}</div>
+    {applied.direction === 'purchase' && showCompleteness && <InvoiceCompleteness key={access} from={applied.date_from} to={applied.date_to} />}
     {error && <div role="alert" className="notice error" data-testid="invoice-error">{error}</div>}
     {message && <div role="status" className="notice success">{message}</div>}
     {applied.direction === 'purchase' && <p className="muted small">{t('invoiceArchive.automaticArchive')}</p>}
@@ -252,7 +256,7 @@ export function InvoicesPage() {
         {[...item.conflicts, ...item.uploads].map((row, index) => <p key={index}>{row.source_key || t('invoiceArchive.archiveProcessing')}: {row.code ? t('invoiceArchive.archiveIssue', { code: row.code }) : t('invoiceArchive.archiveWaiting')}</p>)}
       </div>)}
     </section>}
-    <InvoiceUploadModal open={uploadOpen} initialSupplier={applied.supplier_code} onClose={() => setUploadOpen(false)} onUploaded={() => { setRefresh(value => value + 1); }} />
+    <InvoiceUploadModal allowService open={uploadOpen} initialSupplier={applied.supplier_code} onClose={() => setUploadOpen(false)} onUploaded={() => { setRefresh(value => value + 1); }} />
     {syncOpen && <section className="panel"><h2>{t('invoiceArchive.syncShop')}</h2><p className="muted small">{t('invoiceArchive.syncHelp')}</p>
       <fieldset disabled={working}><div className="fields" style={{ marginTop: '.9rem' }}>
         <label>{t('invoiceArchive.shop')}<select data-testid="sync-shop" value={sync.shop} onChange={event => { setSync({ ...sync, shop: event.target.value }); setSyncResult(null); }}><option value="">{t('invoiceArchive.chooseShop')}</option>{shops.map(shop => <option key={shop.code} value={shop.code}>{shop.name}</option>)}</select></label>
@@ -299,7 +303,10 @@ export function InvoicesPage() {
     <section className="panel">
       <header><div><h2>{t('invoiceArchive.archive')}</h2><p className="muted small">{t('invoiceArchive.documentsCount', { count: data?.total || 0 })}</p></div><div className="actions">
         <span className="muted small">{t('invoiceArchive.selectedCount', { count: selected.size })}</span><button className="primary" data-testid="invoice-batch-download" disabled={working || loading || !selected.size} onClick={() => download([...selected])}><Download size={15} />{t('invoiceArchive.accountantExport')}</button>
-      </div></header><p className="muted small">{t('invoiceArchive.exportHelp')}</p>
+      </div></header>
+      {applied.direction === 'purchase' && <InvoiceBatchPayments key={access} selected={[...selected]} disabled={working || loading}
+        onApplied={() => setRefresh(value => value + 1)} />}
+      <p className="muted small">{t('invoiceArchive.exportHelp')}</p>
       <div className="table-scroll"><table data-testid="invoice-table"><thead><tr>
         <th><input aria-label={t('invoiceArchive.selectPage')} data-testid="invoice-select-page" type="checkbox" disabled={working || loading || !rows.length} checked={rows.length > 0 && rows.every(row => selected.has(row.id))} onChange={event => setSelected(event.target.checked ? new Set(rows.map(row => row.id)) : new Set())} /></th>
         {sortHeader('invoice_number', 'invoice_number')}{sortHeader(applied.direction === 'purchase' ? 'supplier' : 'source', 'supplier_name')}

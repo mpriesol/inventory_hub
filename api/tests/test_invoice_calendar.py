@@ -21,7 +21,8 @@ class InvoiceCalendarTests(unittest.IsolatedAsyncioTestCase):
             ('EUR', '0.10'), ('EUR', '0.20'), ('EUR', '-15.00'), ('EUR', None),
             ('CZK', '100.00'), (None, '3.00'), (None, None)]]
         totals = {row['currency']: row for row in service.payment_summary(items)}
-        self.assertEqual(totals['EUR'], {'currency': 'EUR', 'outstanding_amount': '0.30', 'unknown_count': 1, 'invoice_count': 4})
+        self.assertEqual(totals['EUR'], {'currency': 'EUR', 'outstanding_amount': '0.30', 'unknown_count': 1,
+                                        'gross_amount': None, 'unknown_gross_count': 4, 'invoice_count': 4})
         self.assertEqual(totals['CZK']['outstanding_amount'], '100.00')
         self.assertEqual((totals[None]['outstanding_amount'], totals[None]['unknown_count']), ('3.00', 1))
 

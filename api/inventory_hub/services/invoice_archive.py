@@ -22,6 +22,7 @@ from inventory_hub.db_models import Product, Shop, Supplier, SupplierProduct
 from inventory_hub.file_access import code_component, confined_path, stored_document_path
 from inventory_hub.invoice_archive_types import ArchiveLine, ArchiveMetadata, InvoiceReconcileInput
 from inventory_hub.settings import settings
+from inventory_hub.services.invoice_issuers import indexed_invoice_key, issuer_key
 
 
 class InvoiceArchiveError(Exception):
@@ -77,12 +78,12 @@ def _file(root, owner_area, owner_code, value):
         raise InvoiceArchiveError('invoice_file_invalid', 422)
     name = name.replace('\\', '/').rsplit('/', 1)[-1]
     suffix = Path(name).suffix.lower()
-    if suffix not in {'.pdf', '.csv', '.tsv', '.xml', '.json', '.xlsx', '.xls', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png'}:
+    if suffix not in {'.pdf', '.csv', '.tsv', '.xml', '.isdoc', '.json', '.xlsx', '.xls', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png'}:
         raise InvoiceArchiveError('invoice_file_type_unsupported', 422)
     if suffix == '.pdf' and not content.startswith(b'%PDF-'):
         raise InvoiceArchiveError('invoice_file_invalid', 422)
     digest = hashlib.sha256(content).hexdigest()
-    area = 'invoices/raw/archive' if owner_area == 'suppliers' else 'exports/invoices'
+    area = 'exports/invoices' if owner_area == 'shops' else 'invoices/raw/archive'
     target = confined_path(root, f'{owner_area}/{code_component(owner_code)}/{area}/{digest}/document{suffix}')
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -139,17 +140,18 @@ async def _resolved_lines(db, lines, supplier_id):
     return result
 
 
-async def _legacy_candidate(db, supplier_id, header, files, source_kind):
+async def _legacy_candidate(db, supplier_id, header, files, source_kind, issuer=None):
     if supplier_id is None:
         return None
     paths = [path for item in files for path in (item['original_path'], item['file_path']) if path]
     hashes = [item['sha256'] for item in files]
     rows = (await db.execute(text('''SELECT * FROM uploaded_invoices
-        WHERE supplier_id=:supplier AND (source_key IS NULL OR source_kind='upload' OR :kind='upload')
+        WHERE supplier_id=:supplier AND (CAST(:issuer AS text) IS NULL OR issuer_key IS NULL OR issuer_key=:issuer)
+          AND (source_key IS NULL OR source_kind='upload' OR :kind='upload')
           AND (invoice_number=:number OR file_path=ANY(CAST(:paths AS text[]))
             OR id IN (SELECT invoice_id FROM invoice_files WHERE sha256=ANY(CAST(:hashes AS text[])))) FOR UPDATE'''),
         {'supplier': supplier_id, 'number': header.invoice_number, 'paths': paths,
-         'hashes': hashes, 'kind': source_kind})).mappings().all()
+         'hashes': hashes, 'kind': source_kind, 'issuer': issuer})).mappings().all()
     if not rows:
         return None
     incoming = {item['sha256'] for item in files}
@@ -230,7 +232,7 @@ async def _complete_unparsed_pdf(db, row, header, stored, fingerprint, source_ke
 
 async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, lines=(), files=(),
                          supplier_id=None, shop_id=None, source_data=None, source_fingerprint=None, actor='operator',
-                         complete_unparsed_pdf=False, expected_id=None):
+                         complete_unparsed_pdf=False, expected_id=None, issuer_name=None, service_invoice=False):
     """Caller commits. Replays never replace commercial facts or manual payments."""
     try:
         header = metadata if isinstance(metadata, ArchiveMetadata) else ArchiveMetadata.model_validate(metadata)
@@ -242,7 +244,13 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
             or not isinstance(source_key, str) or not source_key.strip() or len(source_key) > 500
             or any(ord(char) < 32 for char in source_key)):
         raise InvoiceArchiveError('invoice_source_invalid', 422)
-    if direction == 'purchase' and supplier_id and shop_id is None:
+    issuer = issuer_key(issuer_name) if issuer_name else None
+    if service_invoice and (not issuer or direction != 'purchase' or source_kind != 'upload'
+                            or supplier_id is not None or shop_id is not None or parsed):
+        raise InvoiceArchiveError('invoice_owner_invalid', 422)
+    if service_invoice:
+        owner, area, column, owner_id = None, 'service-invoices', 'issuer_key', issuer
+    elif direction == 'purchase' and supplier_id and shop_id is None:
         owner = await db.get(Supplier, supplier_id)
         area, column, owner_id = 'suppliers', 'supplier_id', supplier_id
     elif direction == 'sale' and shop_id and supplier_id is None:
@@ -250,9 +258,9 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         area, column, owner_id = 'shops', 'shop_id', shop_id
     else:
         raise InvoiceArchiveError('invoice_owner_invalid', 422)
-    if owner is None:
+    if owner is None and not service_invoice:
         raise InvoiceArchiveError('invoice_owner_missing', 404)
-    complete_unparsed_pdf = complete_unparsed_pdf and direction == 'purchase' and owner.code == 'northfinder' and source_kind == 'upload'
+    complete_unparsed_pdf = complete_unparsed_pdf and direction == 'purchase' and owner is not None and owner.code == 'northfinder' and source_kind == 'upload'
     fingerprint = source_fingerprint or source_hash(header, parsed)
     if not isinstance(fingerprint, str) or not re.fullmatch(r'[0-9a-f]{64}', fingerprint):
         raise InvoiceArchiveError('invoice_source_invalid', 422)
@@ -263,11 +271,18 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         {'direction': direction, 'kind': source_kind, 'owner': owner_id, 'key': source_key})).mappings().first()
     if existing and existing['source_hash'] != fingerprint and (existing['is_parsed'] or not complete_unparsed_pdf):
         raise InvoiceArchiveError('invoice_source_changed')
-    stored = [_file(Path(settings.INVENTORY_DATA_ROOT), area, owner.code, value) for value in files]
+    if service_invoice and existing is None and header.invoice_number:
+        duplicate = await db.scalar(text('''SELECT id FROM uploaded_invoices
+            WHERE is_service_invoice AND issuer_key=:issuer AND invoice_number=:number'''),
+            {'issuer': issuer, 'number': header.invoice_number})
+        if duplicate:
+            raise InvoiceArchiveError('invoice_service_already_exists')
+    owner_code = 'documents' if service_invoice else owner.code
+    stored = [_file(Path(settings.INVENTORY_DATA_ROOT), area, owner_code, value) for value in files]
     stored.sort(key=lambda row: (row['role'] != 'original', row['file_type'] != 'pdf'))
     # A shop may regenerate the PDF after a payment stamp. The commercial hash
     # must still match; keep both observed originals and retain the first primary.
-    adopted = await _legacy_candidate(db, supplier_id, header, stored, source_kind) if existing is None else None
+    adopted = await _legacy_candidate(db, supplier_id, header, stored, source_kind, issuer) if existing is None else None
     preserve_source = bool(adopted and source_kind == 'upload' and adopted['source_kind'] != 'upload'
                            and adopted['source_key'] is not None)
     identity = existing or adopted
@@ -283,6 +298,8 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         primary = stored[0] if stored else {}
         values = {**header.model_dump(exclude={'parse_error'}), 'supplier': supplier_id, 'shop': shop_id,
             'direction': direction, 'kind': source_kind, 'key': source_key, 'hash': fingerprint,
+            'issuer_name': issuer_name, 'issuer_key': issuer, 'service_invoice': service_invoice,
+            'processing_status': 'processed_without_stock' if service_invoice else 'unprocessed',
             'data': _json(source_data or {}), 'filename': primary.get('filename', ''),
             'stored_name': _digest([source_kind, source_key]) + '-' + (Path(primary.get('file_path', '')).name or 'metadata'),
             'path': primary.get('file_path', ''),
@@ -291,11 +308,11 @@ async def ingest_invoice(db, *, direction, source_kind, source_key, metadata, li
         identifier = await db.scalar(text('''INSERT INTO uploaded_invoices
           (supplier_id,shop_id,direction,source_kind,source_key,source_hash,source_data,source_seen_at,
            document_type,invoice_number,invoice_date,due_date,currency,total_amount,total_without_vat,vat_amount,total_with_vat,
-           source_payment_status,source_paid_amount,source_paid_at,source_paid_date,original_filename,stored_filename,file_path,
+           issuer_name,issuer_key,is_service_invoice,processing_status,source_payment_status,source_paid_amount,source_paid_at,source_paid_date,original_filename,stored_filename,file_path,
            file_type,file_size_bytes,uploaded_by,is_parsed,parse_error,items_count,vat_rate,vat_included)
           VALUES (:supplier,:shop,:direction,:kind,:key,:hash,CAST(:data AS jsonb),NOW(),
            :document_type,:invoice_number,:invoice_date,:due_date,:currency,:total_amount,:total_without_vat,:vat_amount,:total_with_vat,
-           :source_payment_status,:source_paid_amount,:source_paid_at,:source_paid_date,:filename,:stored_name,:path,
+           :issuer_name,:issuer_key,:service_invoice,:processing_status,:source_payment_status,:source_paid_amount,:source_paid_at,:source_paid_date,:filename,:stored_name,:path,
            :file_type,:size,:actor,:parsed,:parse_error,:count,NULL,NULL) RETURNING id'''), values)
     else:
         identifier = identity['id']
@@ -441,9 +458,11 @@ def _parsed_pdf(supplier, content):
     metadata = {'invoice_number': parsed.number, 'invoice_date': parsed.issue_date, 'due_date': parsed.due_date,
         'currency': 'EUR', 'total_amount': parsed.gross, 'total_without_vat': parsed.net,
         'vat_amount': parsed.vat, 'total_with_vat': parsed.gross}
-    lines = [{'line_number': row.number, 'supplier_sku': row.sku, 'product_name': row.title,
+    lines = [{'line_number': row.number, 'supplier_sku': row.sku or None, 'product_name': row.title,
         'quantity': row.qty, 'unit_price': row.price, 'ean': row.ean or None, 'vat_rate': row.vat,
         'total_price': row.net, 'total_price_with_vat': row.gross} for row in parsed.lines]
+    if supplier == 'vavrys':
+        metadata.update(issuer_name=parsed.issuer, issuer_document_key=parsed.key)
     return metadata, lines
 
 
@@ -463,7 +482,7 @@ def parse_uploaded_document(supplier, filename, content):
         else:
             return {}, []
         # Failed parsing must still allow retention of the original document.
-        ArchiveMetadata.model_validate(metadata)
+        ArchiveMetadata.model_validate({k: v for k, v in metadata.items() if k not in ('issuer_name', 'issuer_document_key')})
         lines = [line if isinstance(line, ArchiveLine) else ArchiveLine.model_validate(line) for line in lines]
         return metadata, lines
     except (InvoiceArchiveError, HTTPException, ValidationError, ValueError, OSError):
@@ -489,7 +508,7 @@ def _index_entries(root, supplier):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        key = str(row.get('original_number') or row.get('number') or row.get('invoice_id') or '')
+        key = indexed_invoice_key(supplier, row)
         if not key:
             continue
         # Mutable processing/download fields do not define a document. Validate
@@ -516,6 +535,10 @@ def _indexed_document(root, supplier, key, entry):
     nf_spreadsheet = supplier == 'northfinder' and 'raw_path' in paths and paths['raw_path'].suffix.lower() in ('.xls', '.xlsx')
     if supplier in invoice_pdf.PARSERS and original_pdf and not nf_spreadsheet:
         metadata, lines = _parsed_pdf(supplier, _bytes(original_pdf))
+        if supplier == 'vavrys':
+            if metadata.pop('issuer_document_key') != key:
+                raise InvoiceArchiveError('invoice_source_changed')
+            metadata.pop('issuer_name')
         if supplier == 'northfinder' and metadata['invoice_number'] != key:
             raise InvoiceArchiveError('invoice_source_changed')
         return metadata, lines, files
@@ -604,7 +627,9 @@ async def reconcile_supplier(db, payload, *, source_keys=None):
                     raise InvoiceArchiveError('invoice_receiving_ambiguous')
                 result = await ingest_invoice(db, direction='purchase', source_kind='supplier', source_key=key,
                     supplier_id=supplier.id, metadata=metadata, lines=lines, files=files, source_data=evidence,
-                    actor='supplier-reconcile')
+                    actor='supplier-reconcile',
+                    issuer_name=f'VAVRYS {key[:2].upper()} s.r.o.'
+                    if supplier.code == 'vavrys' and re.fullmatch(r'(?:cz|sk)-\d+', key) else None)
                 # A receiving session is a separate workflow; link only an exact
                 # existing supplier+invoice key, never create or finalize one.
                 if session_ids:
@@ -655,6 +680,8 @@ async def _archive_upload(supplier_code, result, invoice_number=None):
             supplier = await resolve_supplier(db, supplier_code)
             key = (result.get('invoice_number') or invoice_number or Path(result['csv_path']).stem
                    if result.get('csv_path') else invoice_number or Path(result['filename']).stem)
+            if supplier_code == 'vavrys' and result.get('csv_path'):
+                key = Path(result['csv_path']).stem
             # All supplier upload paths share the retirement/reconciliation fence.
             # A source archived while this job waited must not be recreated by
             # the original-only path, or endlessly retried as a missing CSV.

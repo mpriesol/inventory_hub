@@ -231,7 +231,14 @@ global.fetch = async (path, init = {}) => {
   const detail = url.pathname.match(/^\/api\/invoices\/(\d+)$/);
   if (detail) {
     const invoice = invoices.get(Number(detail[1])); assert(invoice);
-    if (init.method === 'PATCH') { assert.equal(body.expected_revision, invoice.payment_revision); Object.assign(invoice, body); invoice.payment_revision++; invoice.finance.payment_revision++; return reply({ id: invoice.id, payment_revision: invoice.payment_revision }); }
+    if (init.method === 'PATCH') {
+      assert.equal(body.expected_revision, invoice.payment_revision);
+      Object.assign(invoice, body);
+      if ('payment_needs_review' in body) invoice.finance.needs_review = body.payment_needs_review;
+      invoice.payment_revision++;
+      invoice.finance.payment_revision++;
+      return reply({ id: invoice.id, payment_revision: invoice.payment_revision });
+    }
     return reply(invoice);
   }
   throw new Error(`Unexpected API ${init.method}: ${path}`);
@@ -421,6 +428,11 @@ global.fetch = async (path, init = {}) => {
   await input('invoice-edit-notes', 'Accountant review'); await click('invoice-edit-save');
   const metadata = calls.filter(call => call.path === '/api/invoices/11' && call.method === 'PATCH').at(-1).body;
   assert.deepEqual(Object.keys(metadata).sort(), ['due_date', 'expected_revision', 'notes']);
+  for (const needsReview of [true, false]) {
+    await click('invoice-edit-open'); await click('invoice-payment-review'); await click('invoice-edit-save');
+    const update = calls.filter(call => call.path === '/api/invoices/11' && call.method === 'PATCH').at(-1).body;
+    assert.equal(update.payment_needs_review, needsReview);
+  }
   await click('invoice-payment-open'); await input('invoice-payment-amount', '1.00'); await input('invoice-payment-date', '2026-10-22');
   assert(required('invoice-payment-save').disabled, 'Unknown opening amount is not guessed as zero');
   await input('invoice-opening-paid', '0.00'); assert(!required('invoice-payment-save').disabled); await click('invoice-payment-save');

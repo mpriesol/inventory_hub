@@ -17,16 +17,23 @@ def payment_summary(items):
     for item in items:
         currency = item['currency']
         group = groups.setdefault(currency, {'currency': currency, 'outstanding_amount': Decimal('0.00'),
+                                             'gross_amount': Decimal('0.00'), 'unknown_gross_count': 0,
                                              'unknown_count': 0, 'invoice_count': 0})
         group['invoice_count'] += 1
-        if item['outstanding_amount'] is None:
+        gross = item.get('gross_amount')
+        if gross is None:
+            group['unknown_gross_count'] += 1
+        else:
+            group['gross_amount'] += Decimal(gross)
+        outstanding = item['outstanding_amount']
+        if outstanding is None or item.get('payment_status') == 'unknown':
             group['unknown_count'] += 1
         else:
-            group['outstanding_amount'] += max(Decimal(item['outstanding_amount']), Decimal('0.00'))
-    return [{**groups[key], 'outstanding_amount': None
-             if groups[key]['unknown_count'] == groups[key]['invoice_count']
-             else format(groups[key]['outstanding_amount'], '.2f')}
-            for key in sorted(groups, key=lambda value: value or '')]
+            group['outstanding_amount'] += max(Decimal(outstanding), Decimal('0.00'))
+    for group in groups.values():
+        for amount, unknown in (('gross_amount', 'unknown_gross_count'), ('outstanding_amount', 'unknown_count')):
+            group[amount] = None if group[unknown] == group['invoice_count'] else format(group[amount], '.2f')
+    return [groups[key] for key in sorted(groups, key=lambda value: value or '')]
 
 
 def planning_periods(items, first, last, *, weekly):
@@ -40,6 +47,7 @@ def planning_periods(items, first, last, *, weekly):
             end = min(next_month - timedelta(days=1), last)
         selected = [item for item in items if start.isoformat() <= item['due_date'] <= end.isoformat()]
         result.append({'from': start.isoformat(), 'to': end.isoformat(),
+                       'week_number': start.isocalendar().week if weekly else None,
                        'totals': payment_summary(selected), 'invoice_ids': [item['id'] for item in selected]})
         start = end + timedelta(days=1)
     return result
@@ -61,7 +69,7 @@ def calendar_conditions(query):
         params["supplier_code"] = query.supplier_code
     if query.f_supplier:
         owner = "s" if query.direction == "purchase" else "sh"
-        conditions.append(f"({owner}.name ILIKE :supplier_search OR {owner}.code ILIKE :supplier_search)")
+        conditions.append(f"({owner}.name ILIKE :supplier_search OR {owner}.code ILIKE :supplier_search OR ui.issuer_name ILIKE :supplier_search)")
         params["supplier_search"] = f"%{query.f_supplier}%"
     if query.f_invoice_number:
         conditions.append("(ui.invoice_number ILIKE :invoice_search OR ui.original_filename ILIKE :invoice_search)")
@@ -129,7 +137,11 @@ async def calendar(db, query, *, today=None):
             "due_date": row["due_date"].isoformat(), "currency": current["currency"],
             "gross_amount": current["gross_amount"], "outstanding_amount": current["outstanding_amount"],
             "payment_status": current["status"], "is_overdue": current["is_overdue"]})
-    return {"range_from": query.range_from.isoformat(), "range_to": query.range_to.isoformat(),
+    by_day = {}
+    for item in items:
+        by_day.setdefault(item['due_date'], []).append(item)
+    return {"days": {day: payment_summary(rows) for day, rows in by_day.items()},
+            "range_from": query.range_from.isoformat(), "range_to": query.range_to.isoformat(),
             "items": items, "total": len(items), "limit": MAX_CALENDAR_INVOICES,
             "totals": payment_summary(items),
             "weeks": planning_periods(items, query.range_from, query.range_to, weekly=True),
