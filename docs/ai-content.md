@@ -207,7 +207,7 @@ Oprava kódu nemení sama uložené úlohy ani publikovanú knihu pravidiel. Pr�
 
 `validate_upgates.py` zo zdrojového balíka je XML/XSD validátor. Nespúšťa ho model a nie je vložený do promptu. API import validuje na serveri reálne odosielaný JSON; nepredstiera úspech XML validácie ako dôkaz platnosti iného formátu. Samostatný XML export a zapojenie pôvodného XML validátora sa doplnia pri rozvoji tohto formátu.
 
-Finálne dáta vzniknú ako obmedzené obsahové doplnenie existujúceho importu. Ceny, DPH, koeficienty, kódy, EAN, fotky a výber variantov zostávajú v jeho deterministickej časti. Bezpečnostný text sa doplní zo zdroja oddelene. Cieľové H1 vlastné polia majú overené definície; chýbajúce sa vytvoria až pri importe. Šablóna H1 e-shopu sa nemení.
+Finálne dáta vzniknú ako obmedzené obsahové doplnenie existujúceho importu. Ceny, DPH, koeficienty, kódy, EAN, fotky a výber variantov zostávajú v jeho deterministickej časti. Bezpečnostný text sa doplní zo zdroja oddelene. Pri rozpoznanom úvode príručky Shimano z feedu Paul Lange sa k popisu pridávajú konkrétne pokyny výrobcu. Pôvodný text zostáva v zdrojových údajoch. Cieľové H1 vlastné polia majú overené definície; chýbajúce sa vytvoria až pri importe. Šablóna H1 e-shopu sa nemení.
 
 Pred odoslaním sa overia aktuálne podklady, cieľ, duplicity a náhľad. Po odoslaní sa využíva existujúci GET na overenie aktivity, identít, príznaku kontroly, textov a H1 polí. Neisté zápisy sa nezopakujú naslepo. Každý e-shop má vlastný náhľad a stav; neúspech jedného nevracia späť úspešný import druhého.
 

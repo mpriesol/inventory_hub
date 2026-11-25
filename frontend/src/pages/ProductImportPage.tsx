@@ -16,7 +16,7 @@ import { ImportProductPreview } from '../components/product/ImportProductPreview
 import { ImportIdentityReviewPanel } from '../components/product/ImportIdentityReviewPanel';
 import { ImportSkuIdentityDialog } from '../components/product/ImportSkuIdentityDialog';
 import { useUnsavedNavigationGuard } from '../hooks/useUnsavedNavigationGuard';
-import { categoryPath, effectiveImportValues, FAMILY_IMPORT_FIELDS, IMPORT_COLUMNS, ImportChanges, ImportColumn, ImportView, importValueText, parseImportValue, pasteImportValues, stageImportValue } from './productImportGrid';
+import { categoryPath, effectiveImportValues, FAMILY_IMPORT_FIELDS, IMPORT_COLUMNS, ImportChanges, ImportColumn, ImportView, importValueText, parseImportValue, pasteImportValues, pendingManufacturerSku, stageImportValue } from './productImportGrid';
 import './ProductImportPage.css';
 
 const PROCESSING_AI = new Set(['queued', 'generating', 'preparing_import', 'import_queued', 'importing']);
@@ -93,7 +93,7 @@ export function ProductImportPage() {
   const rows = draft?.rows || [];
   const profileChanged = (row: ProductImportRow) => (effectiveImportValues(row, changes).ai_category_profile || 'auto') !== (row.values.ai_category_profile || 'auto');
   const needsPreparation = (row: ProductImportRow) => !linkOnly(row) && (profileChanged(row) || row.ai_job?.staging?.profile_matches === false || (row.ai_job?.status === 'completed' && row.ai_job.staging?.ai_applied === false));
-  const filteredRows = rows.filter(row => { const values = effectiveImportValues(row, changes); return `${values.code} ${values.name} ${values.eans.join(' ')} ${row.source_category || ''}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase()); });
+  const filteredRows = rows.filter(row => { const values = effectiveImportValues(row, changes); return `${values.code} ${values.supplier_code} ${values.name} ${values.eans.join(' ')} ${row.source_category || ''}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase()); });
   const shownRows = filteredRows.slice((page - 1) * 50, page * 50);
   const visibleSelected = shownRows.filter(row => selected.has(row.id));
   const bulkIds = new Set((bulkScope === 'visible' ? visibleSelected : rows.filter(row => selected.has(row.id))).map(row => row.id));
@@ -354,15 +354,18 @@ export function ProductImportPage() {
             const values = effectiveImportValues(row, changes);
             const first = row.is_variant && shownRows[index - 1]?.group_key !== row.group_key;
             const readySku = row.sku_preview?.status === 'new' || row.sku_preview?.status === 'existing';
+            const pendingSku = pendingManufacturerSku(row);
+            const displayedCode = pendingSku ? values.supplier_code : values.code;
             const reviewPausedAi = row.ai_job?.status === 'import_blocked' && row.ai_job.error === 'import_identity_review_required' && aiApplied(row);
             return <React.Fragment key={row.id}>
             {first && <tr className="import-family"><td colSpan={columns.length + 6}><strong>{values.group_name || row.group_name || row.group_key}</strong><span>{c('familyRows', { count: rows.filter(item => item.group_key === row.group_key).length })}</span><small>{c('familyField')}</small></td></tr>}
             <tr data-row={row.id} className={Object.keys(changes[row.id] || {}).length ? 'import-row-dirty' : ''}>
               <td className="import-fixed import-select"><input type="checkbox" aria-label={c('selectRow', { code: values.code })} disabled={locked} checked={selected.has(row.id)} onChange={event => setSelected(old => { const next = new Set(old); event.target.checked ? next.add(row.id) : next.delete(row.id); return next; })} /></td>
               <td className="import-fixed import-code"><div>
-                <button type="button" aria-label={c('previewRow', { code: values.code })} onClick={() => setPreviewRow({ ...row, values })}><ProductThumb key={values.images[0]} url={catalogImageUrl(values.images[0])} name={values.name} size={36} /></button>
+                <button type="button" aria-label={c('previewRow', { code: displayedCode })} onClick={() => setPreviewRow({ ...row, values })}><ProductThumb key={values.images[0]} url={catalogImageUrl(values.images[0])} name={values.name} size={36} /></button>
                 <span>
-                  <button type="button" className="import-product-link" onClick={() => setPreviewRow({ ...row, values })}><code title={c('productPreview')}>{values.code}</code></button>
+                  <button type="button" className="import-product-link" onClick={() => setPreviewRow({ ...row, values })}><code title={c('productPreview')}>{displayedCode}</code></button>
+                  {pendingSku && <small>{c('fields.supplier_code')}</small>}
                   <small>{row.is_variant ? c('variant') : c('standalone')}</small>
                   {!row.hub_product_id && !row.expected_hub_product_id && !linkOnly(row) && <button type="button" className="import-product-link"
                     data-testid={`import-sku-${row.id}`} disabled={locked || !!editing || !!editor} onClick={() => { setError(''); setSkuRow({ ...row, values }); }}>

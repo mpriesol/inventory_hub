@@ -593,7 +593,10 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.client.sent, [])
 
     async def test_explicit_publication_uses_edited_snapshot_after_feed_refresh(self):
+        self.write_feed(xml_item(extra='<PRICE_DISCOUNT>48,00</PRICE_DISCOUNT><PRICE_DISCOUNT_VAT>59,04</PRICE_DISCOUNT_VAT>'))
+        await self.refresh()
         result = await self.create()
+        self.assertEqual(result['rows'][0]['values']['purchase_net'], '48.00')
         from inventory_hub.services.sku_policy import add_brand_alias, registered_brand_id
         from inventory_hub.sku_policy_types import BrandAliasCreate
         async with self.sessions() as db:
@@ -612,6 +615,8 @@ class ProductImportDatabaseTests(unittest.IsolatedAsyncioTestCase):
         result = await self.mutate(result, service.preview)
         preview = result['publication']
         payload = preview['items'][0]['payload']
+        self.assertEqual(payload['prices'][0]['price_purchase'], 59.04)
+        self.assertEqual(payload['prices'][0]['pricelists'][0]['price_original'], 89.99)
         self.assertEqual(payload['descriptions'][0]['title'], 'Môj názov')
         self.assertEqual(payload['manufacturer'], 'TEST oficiálny názov')
         self.assertEqual(payload['images'][0]['url'], 'https://images.example.com/edited.jpg')

@@ -24,6 +24,7 @@ from inventory_hub.product_import_models import ProductImportDraft
 from inventory_hub.product_import_types import DraftRevision, ImportValues
 from inventory_hub.services import ai_content, catalog_import
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
+from inventory_hub.services.catalog_html import publication_safety
 from inventory_hub.services.catalog_identity import parent_shop_code
 from inventory_hub.services.catalog_merchandising import availability_policy, category_chain, resolve_catalog_availability
 from inventory_hub.services.identifiers import ProductIdentifierService
@@ -396,6 +397,8 @@ def validate_rows(document):
         source = to_source(row)
         row['errors'] = list(source.import_blockers) + (['stock_feed_only'] if 'stock_feed_only' in source.warnings else [])
         row['warnings'] = list(source.warnings)
+        if row.get('source_kind') != 'invoice' and source.fetched_at and catalog_import.stale_paul_lange_listing(source):
+            row['warnings'].append('paul_lange_listing_stale')
         if row['values']['manufacturer_code']:
             row['warnings'].append('manufacturer_code_source_only')
         from inventory_hub.services.ai_content_validation import has_active_html
@@ -761,15 +764,16 @@ async def create(db, request, *, sources=None, receiving_origin=None, receiving_
             sale = money(catalog_import._prices(p, request.options, cfg, True)[0]['pricelists'][0]['price_original'])
         except (ValueError, ArithmeticError):
             sale = None
+        purchase_net, _ = catalog_import.effective_purchase_prices(p)
         values = ImportValues(code=p.shop_code, supplier_code=p.code, name=p.name, group_name=p.group_name or '',
             brand=p.brand or '', manufacturer_code=p.manufacturer_code or '', eans=p.eans, images=p.images,
-            description_html='\n'.join(filter(None, [p.description, p.safety_information])),
+            description_html='\n'.join(filter(None, [p.description, publication_safety(p)])),
             short_description=getattr(p, 'short_description', ''), seo_title=getattr(p, 'seo_title', '') or p.name,
             seo_description=getattr(p, 'seo_description', '') or ai_content.text_of(p.description)[:160],
             seo_url=getattr(p, 'seo_url', ''), metadata=getattr(p, 'metadata', {}),
             category_code=request.options.category_code or getattr(p, 'target_category_code', None),
             parameters=p.parameters, variant_attributes=p.variant_attributes,
-            purchase_net=money(p.prices.purchase_net), retail_gross=money(p.prices.retail_gross), sale_gross=sale,
+            purchase_net=money(purchase_net), retail_gross=money(p.prices.retail_gross), sale_gross=sale,
             vat_percent=money(p.prices.vat_percent), currency=p.prices.currency,
             availability=availability[p.code]['label'], target_shops=[request.shop],
             target_category_codes={shop: getattr(mapped[p.id], 'target_category_code', None) for shop, mapped in mapped_targets.items()})
@@ -1383,10 +1387,7 @@ def ai_proposed_values(row, output, context):
     accept_category = not baseline.get('category_code') or descend_to_leaf
     if accept_category:
         proposed['category_code'] = context.get('options', {}).get('category_code')
-    safety = CatalogProduct.model_validate(row['source']).safety_information
-    if safety:
-        from inventory_hub.services.catalog_html import clean_description
-        proposed['description_html'] += '<h2>Bezpečnostné informácie</h2>' + clean_description(safety)
+    proposed['description_html'] += publication_safety(CatalogProduct.model_validate(row['source']), with_heading=True)
     return proposed, accept_category
 
 

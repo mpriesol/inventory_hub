@@ -22,6 +22,8 @@ New physical product SKUs combine the registered two-letter manufacturer abbrevi
 
 Reopening an unsaved preparation rechecks blocked SKU previews against the active manufacturer registry. A subsequently confirmed feed field is read from the draft’s original raw record when the feed’s record selection is compatible. A saved supplier article reference can resolve a missing code when the original supplier feed, offer, brand and variant barcode agree. The detail view recalculates the preview without changing the draft revision. Saving, checking candidate cards and preparing AI use the same evidence. Removing a reference before saving invalidates a generated SKU that depended on it. Differing source codes require review. A changed supplier code, brand, barcode or variant cannot reuse proof from the old leaf. Existing cards and explicit operator confirmations keep their own identity.
 
+While a new SKU is blocked or in conflict, the table and product preview display the labeled supplier item code. After manufacturer evidence resolves the SKU, the same places show the allocated code.
+
 **Nastaviť SKU → Uložiť SKU do konceptu** saves the correction with pending
 table edits in the same revision-checked request. The table shows the SKU
 returned by the server. **Uložiť koncept a skontrolovať skladové karty** opens
@@ -37,6 +39,16 @@ An automatically recognized but unsaved existing card can also be explicitly mar
 For BIKETREK and xTrek, product preparation reads the latest synchronized stock evidence for the exact supplier and its native item code. Each variant has its own delivery time. A fresh positive observation from the configured availability feed uses that supplier’s orderable label, even when the product listing shows zero. A fresh zero uses the supplier’s unavailable label when configured. Missing or expired evidence uses the unknown label. An item confirmed absent from a complete feed uses the supplier’s missing-item rule.
 
 Suppliers using only a product catalog can use its current, dated stock information. Sloger and Husky keep their authenticated source requirements. Opening an editable draft recalculates automatic availability. A manual availability edit keeps its value. The completed import retains the values that were sent.
+
+## Paul Lange prices and Shimano descriptions
+
+The configured stock feed supplies the delivery-time decision. The listing feed still shows its own quantity and download time in the catalog. Compare the same supplier item code and observation date when the two values differ.
+
+New drafts use the valid promotional purchase quote from a Paul Lange listing indexed within the previous 48 hours. The price column shows the net quote. When the promotion is absent, invalid, or older than the limit, the draft uses the regular quote. A dated listing older than 48 hours gets a warning. Refreshing the catalog affects new drafts. Saved prices and manual edits follow the ordinary draft snapshot rules.
+
+For Paul Lange in EUR, an automatic sale price calculated with a brand multiplier other than 1 rounds down to a gross ending of .00, .20, .50, or .90 in the same euro. For example, 23.44 becomes 23.20. Below .20, prices retain a positive amount. Manual prices and the direct retail option keep their specified values. Shops that store net prices receive the gross result converted at the item's VAT rate.
+
+New feed and AI descriptions omit the recognizable general preface from the Shimano manual supplied by Paul Lange. The specific manufacturer warnings appear in a clearly labeled section, and the original warning text remains in the source record.
 
 ## Sloger B2B before import preparation
 

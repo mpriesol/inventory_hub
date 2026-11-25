@@ -358,6 +358,25 @@ class ProductImportUnitTests(unittest.TestCase):
         self.assertEqual(item['values']['category_code'], 'LEAF')
         self.assertIn('Bezpečnosť', item['values']['description_html'])
 
+    def test_paul_lange_shimano_manual_preface_stays_out_of_ai_and_feed_descriptions(self):
+        item = row(brand='SHIMANO')
+        item['source'].update(brand='SHIMANO', safety_information=(
+            'UPOZORNENIE\nInformácie o inštalácii, nastavení a výmene výrobkov hľadajte v príručke.\n'
+            'Kvôli bezpečnosti si pred používaním prečítajte príručku.\n'
+            'Nasledujúce pokyny je potrebné vždy dodržiavať.\n'
+            'NEBEZPEČENSTVO - Nedodržanie pokynov môže viesť k úrazu.\n'
+            'VÝSTRAHA - Nedodržanie pokynov môže viesť k úrazu.\n'
+            'UPOZORNENIE - Nedodržanie pokynov môže viesť k úrazu.\n\n'
+            'VÝSTRAHA\n- Nepoužívajte poškodený kotúč.'))
+        product = service.to_source(item)
+        direct = catalog_import.build_item([product], ShopImportOptions(), {}, True).payload['descriptions'][0]['long_description']
+        ai, _ = service.ai_proposed_values(item, content(), {})
+        for description in (direct, ai['description_html']):
+            self.assertNotIn('Informácie o inštalácii', description)
+            self.assertNotIn('Bezpečnostné informácie', description)
+            self.assertIn('Nepoužívajte poškodený kotúč.', description)
+        self.assertIn('Informácie o inštalácii', item['source']['safety_information'])
+
     def test_missing_prices_and_duplicate_identities_still_block_parent_categories_are_allowed(self):
         rows = [row(sale_gross=None, category_code='ROOT'), row(2)]
         rows[1]['values']['eans'] = rows[0]['values']['eans']

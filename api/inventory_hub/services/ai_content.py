@@ -19,6 +19,7 @@ from inventory_hub.db_models import Shop
 from inventory_hub.services import ai_content_provider as provider, ai_content_rules as rules, catalog_import
 from inventory_hub.services.ai_content_validation import text_of, validate_content
 from inventory_hub.services.catalog import CatalogError, selected_products
+from inventory_hub.services.catalog_html import publication_safety
 from inventory_hub.services.catalog_identity import parent_shop_code
 from inventory_hub.services.catalog_sort import variant_sort_key
 from inventory_hub.settings import settings
@@ -322,7 +323,7 @@ async def prepare_import(db, job, *, require_confirmation=False):
         "content": job.output if ctx["use_ai"] else None,
         "supplier_name": ctx["resolved"].get("import_policy", {}).get("supplier_name") or {"paul-lange": "Paul Lange", "northfinder": "Northfinder"}.get(ctx["supplier"], ctx["supplier"]),
         "import_policy": ctx["resolved"].get("import_policy", {}),
-        "safety": "\n".join(dict.fromkeys(p.safety_information for p in products if p.safety_information)),
+        "safety": "\n".join(dict.fromkeys(publication_safety(p) for p in products if p.safety_information)),
         "parameter_mapping": checks.get("parameter_mapping", {}) if ctx["use_ai"] else {},
         "registered_parameters": bool((ctx["resolved"].get("category") or {}).get("parameters"))}
     preview = await catalog_import.create_preview(db, ctx["shop"], ShopImportPreviewRequest(
