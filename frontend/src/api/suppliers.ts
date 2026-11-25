@@ -15,6 +15,7 @@ export interface SupplierSummary {
   product_prefix_lock_reason?: string | null;
   config_error?: string | null;
   invoice_count: number;
+  listing_feed_keys?: string[];
   feed_mode: 'remote' | 'local' | 'none' | 'ariga-b2b';
   download_strategy: 'web' | 'manual' | 'api' | 'disabled' | 'paul-lange-web' | 'northfinder-web';
   last_invoice_date: string | null;

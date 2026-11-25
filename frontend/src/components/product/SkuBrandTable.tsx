@@ -1,31 +1,19 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SkuBrand } from '../../api/skuPolicy';
-import { BrandSupplierLinks } from './SkuBrandSuppliers';
+import { Link } from 'react-router-dom';
+import { SupplierSummary } from '../../api/suppliers';
+import { validPortal } from './SkuBrandSuppliers';
 import { Button } from '../ui/Button.new';
 import './SkuBrandTable.css';
 
 const pageSize = 40;
 
-function RegistrySource({ value }: { value?: string }) {
-  const { t } = useTranslation();
-  if (!value) return <>—</>;
-  const lines = value.split('\n').filter(Boolean).map(line => {
-    const match = line.match(/^(?:(.+?)\s+—\s+)?(https?:\/\/[^\s]+)$/i);
-    if (match) return { label: match[1] || match[2], url: match[2] };
-    return { label: line === 'operator:sku-registry' ? t('skuPolicy.registry.manual') : line, url: '' };
-  });
-  const entries = lines.map(({ label, url }, index) => <div key={index}>
-    {url ? <a href={url} target="_blank" rel="noreferrer">{label}</a> : label}
-  </div>);
-  return <details>
-    <summary>{t('skuPolicy.registry.showSources', { count: lines.length })}</summary>
-    {entries}
-  </details>;
-}
+const supplierKey = (value: string) => value.normalize('NFD').toLowerCase().replace(/[^a-z0-9]+/g, '');
 
-export function SkuBrandTable({ brands, onSelect, onEdit, onRemove, onRestore }: {
+export function SkuBrandTable({ brands, suppliers = [], onSelect, onEdit, onRemove, onRestore }: {
   brands: SkuBrand[];
+  suppliers?: SupplierSummary[];
   onSelect?: (brand: SkuBrand) => void;
   onEdit?: (brand: SkuBrand) => void;
   onRemove?: (brand: SkuBrand) => void;
@@ -66,32 +54,45 @@ export function SkuBrandTable({ brands, onSelect, onEdit, onRemove, onRestore }:
             <th scope="col">{t('skuPolicy.registry.prefix')}</th>
             {onEdit && <th scope="col">{t('skuPolicy.registry.suppliers')}</th>}
             <th scope="col">{t('skuPolicy.registry.aliases')}</th>
-            {onEdit && <th scope="col">{t('skuPolicy.registry.source')}</th>}
+            {onEdit && <th scope="col">{t('skuPolicy.registry.b2bSource')}</th>}
+            {onEdit && <th scope="col">{t('skuPolicy.registry.feedSource')}</th>}
             {onEdit && <th scope="col">{t('skuPolicy.registry.actions')}</th>}
             {onSelect && <th scope="col"><span className="sr-only">{t('skuPolicy.registry.choose')}</span></th>}
           </tr></thead>
           <tbody>{pageRows.map(brand => {
             const aliases = brand.aliases.filter(alias => alias !== brand.name);
-            return <tr key={brand.id}>
-              <th scope="row">{brand.name}{brand.kind !== 'brand' && <small>{t(`skuPolicy.brandKinds.${brand.kind}`)}</small>}</th>
-              <td><code>{brand.code}</code>
-                {onEdit && !!brand.reserved_codes?.length && <small className="sku-brand-previous">{t('skuPolicy.registry.previousCodes', { codes: brand.reserved_codes.join(', ') })}</small>}
-              </td>
-              {onEdit && <td><BrandSupplierLinks suppliers={brand.suppliers} /></td>}
-              <td>{aliases.length ? aliases.join(', ') : '—'}</td>
-              {onEdit && <td className="sku-brand-source"><RegistrySource value={brand.source_ref} /></td>}
-              {onEdit && <td><div className="sku-registry-actions">
-                {brand.archived && onRestore ? <Button type="button" size="sm" variant="secondary" aria-label={t('skuPolicy.registry.restoreName', { name: brand.name })}
-                  onClick={() => onRestore(brand)}>{t('skuPolicy.registry.restore')}</Button> : <>
-                <Button type="button" size="sm" variant="secondary" aria-label={t('skuPolicy.registry.editName', { name: brand.name })}
-                  onClick={() => onEdit(brand)}>{t('common.edit')}</Button>
-                {onRemove && <Button type="button" size="sm" variant="danger" aria-label={t('skuPolicy.registry.removeName', { name: brand.name })}
-                  onClick={() => onRemove(brand)}>{t('skuPolicy.registry.remove')}</Button>}
-                </>}
-              </div></td>}
-              {onSelect && <td><Button type="button" size="sm" variant="secondary" aria-label={t('skuPolicy.registry.chooseName', { name: brand.name })}
-                onClick={() => onSelect(brand)}>{t('skuPolicy.registry.choose')}</Button></td>}
-            </tr>;
+            const supplierRows = onEdit && brand.suppliers?.length ? brand.suppliers : [null];
+            return supplierRows.map((supplier, index) => {
+              const key = supplierKey(supplier?.name || '');
+              const links = supplier ? suppliers.filter(item => [item.name, item.code].some(value => supplierKey(value) === key)) : [];
+              const linked = links.length === 1 ? links[0] : undefined;
+              const span = supplierRows.length;
+              return <tr key={`${brand.id}-${supplier?.name || ''}`}>
+                {index === 0 && <><th scope="row" rowSpan={span}>{brand.name}{brand.kind !== 'brand' && <small>{t(`skuPolicy.brandKinds.${brand.kind}`)}</small>}</th>
+                  <td rowSpan={span}><code>{brand.code}</code>
+                    {onEdit && !!brand.reserved_codes?.length && <small className="sku-brand-previous">{t('skuPolicy.registry.previousCodes', { codes: brand.reserved_codes.join(', ') })}</small>}
+                  </td></>}
+                {onEdit && <td>{supplier?.name || '—'}</td>}
+                {index === 0 && <td rowSpan={span}>{aliases.length ? aliases.join(', ') : '—'}</td>}
+                {onEdit && <td className="sku-brand-source">{supplier?.url && validPortal(supplier.url)
+                  ? <a href={supplier.url} target="_blank" rel="noreferrer">{supplier.url}</a> : '—'}</td>}
+                {onEdit && <td className="sku-brand-source">{linked?.listing_feed_keys?.length ?
+                  linked.listing_feed_keys.map(feed => <div key={feed}>
+                    <Link to={`/suppliers/${encodeURIComponent(linked.code)}/catalog?${new URLSearchParams({ feed })}`}>{feed}</Link>
+                  </div>) : '—'}</td>}
+                {onEdit && index === 0 && <td rowSpan={span}><div className="sku-registry-actions">
+                  {brand.archived && onRestore ? <Button type="button" size="sm" variant="secondary" aria-label={t('skuPolicy.registry.restoreName', { name: brand.name })}
+                    onClick={() => onRestore(brand)}>{t('skuPolicy.registry.restore')}</Button> : <>
+                    <Button type="button" size="sm" variant="secondary" aria-label={t('skuPolicy.registry.editName', { name: brand.name })}
+                      onClick={() => onEdit(brand)}>{t('common.edit')}</Button>
+                    {onRemove && <Button type="button" size="sm" variant="danger" aria-label={t('skuPolicy.registry.removeName', { name: brand.name })}
+                      onClick={() => onRemove(brand)}>{t('skuPolicy.registry.remove')}</Button>}
+                    </>}
+                </div></td>}
+                {onSelect && index === 0 && <td rowSpan={span}><Button type="button" size="sm" variant="secondary" aria-label={t('skuPolicy.registry.chooseName', { name: brand.name })}
+                  onClick={() => onSelect(brand)}>{t('skuPolicy.registry.choose')}</Button></td>}
+              </tr>;
+            });
           })}</tbody>
         </table>
       </div>}

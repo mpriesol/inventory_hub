@@ -36,6 +36,7 @@ const calls = []; let failEdit = false, deferRead = false, releaseRead, failSour
 global.fetch = async (path, init = {}) => {
   const body = init.body ? JSON.parse(init.body) : undefined;
   calls.push({ path, method: init.method || 'GET', body });
+  if (path === '/api/suppliers') return new Response(JSON.stringify([{ code: 'regional', name: reseller.name, listing_feed_keys: ['products'] }]), { headers: { 'Content-Type': 'application/json' } });
   if (path === '/api/sku-policy/brands' && init.method === 'GET') return { ok: true, status: 200, json: async () => ({ brands: clone(skuBrands.filter(brand => !brand.archived)) }) };
   if (path === '/api/sku-policy/brands?include_archived=true' && init.method === 'GET') return { ok: true, status: 200, json: async () => ({ brands: clone(skuBrands) }) };
   if (path === '/api/sku-policy/brands' && init.method === 'POST') {
@@ -796,12 +797,10 @@ async function render(entry) {
   assert(skuBrands.some(brand => brand.name === 'Hub Test' && brand.code === 'HT'));
   await change(document.querySelector('.sku-brand-search input'), 'fixture catalog');
   assert.deepEqual([...document.querySelectorAll('.sku-brand-table tbody code')].map(node => node.textContent), ['HT']);
-  assert.equal(document.querySelector('.sku-brand-source details a').href, 'https://example.test/catalog');
-  const primaryLinks = [...document.querySelectorAll('.sku-brand-suppliers a')];
-  assert.deepEqual(primaryLinks.map(node => [node.textContent, node.href]),
-    [[reseller.name, reseller.url], ['Local trader', 'https://local.example.test/login']]);
-  assert(!primaryLinks.some(node => node.closest('details')), 'Every linked supplier is visible without expanding sources');
-  assert(document.querySelector('.sku-brand-suppliers').textContent.includes('Phone orders'));
+  assert.deepEqual([...document.querySelectorAll('.sku-brand-source a')].map(node => node.getAttribute('href')),
+    [reseller.url, '/suppliers/regional/catalog?feed=products', 'https://local.example.test/login']);
+  assert.equal(document.querySelectorAll('.sku-brand-table tbody tr').length, 3);
+  assert(document.querySelector('.sku-brand-table tbody').textContent.includes('Phone orders'));
   await change(document.querySelector('.sku-brand-search input'), 'Local trader');
   assert.deepEqual([...document.querySelectorAll('.sku-brand-table tbody code')].map(node => node.textContent), ['HT']);
   await click(editName('Hub Test'));

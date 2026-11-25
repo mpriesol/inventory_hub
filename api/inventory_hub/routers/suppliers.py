@@ -20,7 +20,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile, File, Q
 from inventory_hub.access import admin_access, operator_access
 from inventory_hub.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from inventory_hub.settings import settings
 from inventory_hub.config_normalize import (
@@ -61,6 +61,7 @@ class SupplierSummary(BaseModel):
     product_prefix_lock_reason: Optional[str] = None
     config_error: Optional[str] = None
     invoice_count: int
+    listing_feed_keys: list[str] = Field(default_factory=list)
     feed_mode: str  # "remote" | "local" | "none"
     download_strategy: str  # "web" | "manual" | "api" | "disabled"
     last_invoice_date: Optional[str] = None
@@ -392,6 +393,8 @@ def _validate_config_syntax(cfg: Dict[str, Any]) -> ValidationResult:
 @router.get("/suppliers", response_model=List[SupplierSummary])
 def list_suppliers() -> List[SupplierSummary]:
     """List all configured suppliers with summary info"""
+    from inventory_hub.services.catalog import CatalogError, source_config, _source_configured
+
     codes = _list_supplier_codes()
     summaries = []
 
@@ -399,6 +402,15 @@ def list_suppliers() -> List[SupplierSummary]:
         try:
             cfg = io_load_supplier(code, write_back_on_load=False)
             identity = supplier_prefix_status(code)
+
+            listing_feed_keys = []
+            for key in (cfg.get('feeds', {}).get('sources') or {}):
+                try:
+                    source, _ = source_config(code, cfg, key, require_parser=False)
+                except CatalogError:
+                    continue
+                if _source_configured(source):
+                    listing_feed_keys.append(key)
 
             summaries.append(SupplierSummary(
                 code=code,
@@ -409,6 +421,7 @@ def list_suppliers() -> List[SupplierSummary]:
                 product_prefix_lock_reason=identity['product_prefix_lock_reason'],
                 invoice_count=_count_invoices(code),
                 feed_mode=_get_feed_mode(cfg),
+                listing_feed_keys=listing_feed_keys,
                 download_strategy=_get_download_strategy(cfg),
                 last_invoice_date=_get_last_invoice_date(code),
                 last_feed_sync=cfg.get('last_feed_sync'),

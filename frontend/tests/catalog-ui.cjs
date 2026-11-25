@@ -56,7 +56,8 @@ global.fetch = async (path, init = {}) => {
   let data;
   if (url.pathname.endsWith('/catalog')) data = { name: 'Paul Lange', default_shop: 'biketrek', sources: [{ key: 'products', name: 'Produkty', supported: true, configured: true }], shops: [{ code: 'biketrek', name: 'BikeTrek', ready: true }, { code: 'xtrek', name: 'xTrek', ready: true }, { code: 'pending', name: 'Pending', ready: false }], defaults: { category_code: 'K-TEST' }, status: 'completed' };
   else if (url.pathname.endsWith('/catalog/products')) {
-    const rows = url.searchParams.get('page') === '2' ? [{ key: 'item:3', product: products[2], is_group: false, variants_count: 0, matching_ids: [3], variants: [] }] : [{ key: 'group:G1', product: products[0], is_group: true, variants_count: 2, matching_ids: [1, 2], variants: products.slice(0, 2) }];
+    const exact = url.searchParams.get('code');
+    const rows = exact ? [{ key: 'item:3', product: products[2], is_group: false, variants_count: 0, matching_ids: [3], variants: [] }] : url.searchParams.get('page') === '2' ? [{ key: 'item:3', product: products[2], is_group: false, variants_count: 0, matching_ids: [3], variants: [] }] : [{ key: 'group:G1', product: products[0], is_group: true, variants_count: 2, matching_ids: [1, 2], variants: products.slice(0, 2) }];
     data = { run_id: snapshot, fetched_at: '2026-01-01T12:00:00Z', total: 2, total_items: 3, pages: 2, manufacturers: ['TEST'], items: rows };
   } else if (url.pathname.endsWith('/catalog/products/1')) data = { product: products[0], variants: [], source_fields: {}, source_xml: '<SHOPITEM/>', description_html: '' };
   else if (url.pathname.endsWith('/selection')) data = { ids: [1, 2, 3], run_id: snapshot };
@@ -107,6 +108,17 @@ async function change(element, value) { await act(async () => { Object.getOwnPro
 async function settle() { await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)); }); }
 
 (async () => {
+  localStorage.setItem('catalog.targetShop', 'xtrek');
+  await act(async () => root.render(React.createElement(MemoryRouter, { key: 'exact', initialEntries: ['/suppliers/paul-lange/catalog?code=ESMRT86L2&feed=products'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) })))));
+  await settle(); await settle();
+  const exactRequests = calls.filter(call => call.path.endsWith('/catalog/products'));
+  assert(exactRequests.length && exactRequests.every(call => call.query.get('code') === 'ESMRT86L2'));
+  const exactInput = [...document.querySelectorAll('input')].find(input => input.value === 'ESMRT86L2');
+  assert(exactInput, 'A deep link exposes the editable exact filter');
+  await change(exactInput, '');
+  await settle();
+  assert.equal(calls.filter(call => call.path.endsWith('/catalog/products')).at(-1).query.get('code'), null);
+  calls.length = 0;
   localStorage.setItem('catalog.targetShop', 'xtrek');
   await act(async () => root.render(React.createElement(MemoryRouter, { initialEntries: ['/suppliers/paul-lange/catalog'] }, React.createElement(Routes, null, React.createElement(Route, { path: '/suppliers/:supplier/catalog', element: React.createElement(SupplierCatalogPage) }), React.createElement(Route, { path: '/product-import', element: React.createElement(CaptureImport) })))));
   await settle(); await settle();

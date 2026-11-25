@@ -93,6 +93,17 @@ class ProductImportUnitTests(unittest.TestCase):
         self.assertEqual(asyncio.run(service.automatic_manufacturer_identity(
             None, item, 'paul-lange', {}, references)), (None, None))
 
+    def test_shimano_feed_proves_exact_package_without_generic_supplier_fallback(self):
+        for code, gtin in [('ISMRT86M2', '4524667744702'), ('ESMRT86L2', '4550170818104')]:
+            item = row(brand='SHIMANO', supplier_code=code, eans=[gtin])
+            item['source'].update(brand='SHIMANO', code=code, eans=[gtin])
+            with self.subTest(code=code):
+                proof, origin = asyncio.run(service.automatic_manufacturer_identity(None, item, 'paul-lange', {}, {}))
+                self.assertEqual((proof['source_code'], origin), (code, 'feed_reference'))
+                item['source']['eans'] = item['values']['eans'] = ['4006381333931']
+                self.assertEqual(asyncio.run(service.automatic_manufacturer_identity(
+                    None, item, 'paul-lange', {}, {})), (None, None))
+
     def test_legacy_code_candidate_does_not_become_independent_sku_evidence(self):
         from inventory_hub.services import sku_policy
         item = row(sku_identity={'brand': 'TEST', 'source_code': 'LEAF-42',

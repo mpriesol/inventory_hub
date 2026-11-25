@@ -8,6 +8,34 @@ from inventory_hub.services.identifiers import ProductIdentifierService
 from inventory_hub.sku_policy_types import SkuIdentityInput, exact_text, public_source_url
 
 
+# Retail box codes independently matched to the distributor's exact offer.
+# Codes printed on another package of the same model are separate identities.
+PAUL_LANGE_SHIMANO_REFERENCES = {
+    "ESMRT86L2": ({"4550170818104", "0192790818108"},
+                 "https://si.shimano.com/en/pdfs/sm/CY25_GENUINE_PARTS/CY25_GENUINE_PARTS_O.pdf"),
+    "ESMRT86S2": ({"4550170818111", "0192790818115"},
+                 "https://si.shimano.com/en/pdfs/sm/CY25_GENUINE_PARTS/CY25_GENUINE_PARTS_O.pdf"),
+    "ISMRT86M2": ({"4524667744702"},
+                 "https://www.mb-fahrrad.de/teile/bremsen/bremsscheiben/1465/shimano-xt-bremsscheibe-oe-180-mm-6-loch-sm-rt86-ice-tec"),
+}
+
+
+def native_manufacturer_item(source):
+    if (source.get("supplier") != "paul-lange" or source.get("feed_key") != "products"
+            or (source.get("brand") or "").strip().casefold() != "shimano"):
+        return None
+    code = source.get("code")
+    reference = PAUL_LANGE_SHIMANO_REFERENCES.get(code)
+    if reference is None:
+        return None
+    barcodes = {ProductIdentifierService.gtin_key(value) for value in source.get("eans", []) if value != code}
+    expected = {ProductIdentifierService.gtin_key(value) for value in reference[0]}
+    if not barcodes or not barcodes <= expected:
+        return None
+    return {"brand": source["brand"], "source_code": code, "code_kind": "manufacturer",
+            "leaf_confirmed": True, "source_ref": reference[1]}
+
+
 class ManufacturerReference(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

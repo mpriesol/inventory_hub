@@ -51,7 +51,7 @@ je prvým kľúčom názov feedu a druhým presný dodávateľský kód. Záznam
 `brand`, `gtin`, `manufacturer_code` a `source_ref` s odkazom na doklad ku
 konkrétnemu baleniu. Príprava overí názov značky a jediný platný čiarový kód
 balenia. Zmena dodávateľa, ponuky alebo balenia vyžaduje zodpovedajúci doklad.
-Ručný výber obsluhy má prednosť. Takýto doklad nevyžaduje obnovu feedu.
+Paul Lange má overený zdroj aj pre konkrétne balenia kotúčov Shimano SM-RT86. Pri zhodnej ponuke, značke a GTIN sa kód načíta automaticky, aj po opätovnom otvorení konceptu. Pre ostatné ponuky možno potvrdiť výrobné pole pre celý feed. Ručný výber obsluhy má prednosť. Takýto doklad nevyžaduje obnovu feedu.
 
 Z potvrdeného výrobného kódu a registrovanej značky Hub automaticky pripraví
 SKU a uloží dôkaz identity pri vytvorení karty. Obsluha nezadáva SKU pre každý
@@ -60,7 +60,7 @@ výrobok a nestará sa o jeho jedinečnosť. Dodávateľský kód sa nezmení a 
 
 ## Ručné overenie a existujúce produkty
 
-V **Nastavenia → Výrobcovia a prefixy SKU** môžete výrobcu pridať, upraviť
+V hlavnej navigácii **Značky** otvárajú rovnakú evidenciu ako **Nastavenia → Výrobcovia a prefixy SKU**. Každý dodávateľ má vlastný riadok, priamy B2B odkaz a odkazy na nastavené katalógové feedy v Hube. V **Nastavenia → Výrobcovia a prefixy SKU** môžete výrobcu pridať, upraviť
 alebo odobrať. Hľadať sa dá podľa výrobcu, prefixu, iného zápisu mena aj
 zdroja. Jeden výrobca má jeden aktívny prefix pre všetkých dodávateľov.
 Pri premenovaní možno zachovať pôvodné meno ako alias, aby ho Hub naďalej
