@@ -262,6 +262,7 @@
     "not_configured": "Nenakonfigurované"
   },
   "nav": {
+    "brands": "Značky",
     "dashboard": "Prehľad",
     "invoices": "Faktúry",
     "receiving": "Príjem",
@@ -4837,7 +4838,8 @@
       "addSupplier": "Pridať dodávateľa",
       "duplicateSupplier": "Každého dodávateľa zadajte iba raz.",
       "invalidPortal": "Zadajte verejnú adresu B2B portálu (http:// alebo https://). Prihlasovacie údaje, tokeny a dočasné presmerovania do adresy nepatria.",
-      "showSources": "Zdroje ({{count}})"
+      "b2bSource": "Zdroj B2B",
+      "feedSource": "Zdroj Feed"
     },
     "help": "Nové SKU skladového tovaru tvorí dvojpísmenová predpona výrobcu a jeho presný kód výrobku. Kód dodávateľa sa eviduje samostatne. Existujúce SKU zostávajú zachované.",
     "brand": "Výrobca alebo evidenčná kategória služby",

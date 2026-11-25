@@ -8,6 +8,7 @@ import {
   Package,
   BarChart3,
   Factory,
+  Tags,
   ShoppingCart,
   Settings,
   ChevronRight,
@@ -38,6 +39,7 @@ const navigation: NavItem[] = [
   { id: 'stock-history', nameKey: 'nav.stockHistory', href: '/stock/movements', icon: ClipboardList, badge: null },
   { id: 'order-audit', nameKey: 'nav.orderAudit', href: '/orders', icon: ClipboardList, badge: null },
   { id: 'suppliers', nameKey: 'nav.suppliers', href: '/suppliers', icon: Factory, badge: null },
+  { id: 'brands', nameKey: 'nav.brands', href: '/settings/sku-brands', icon: Tags, badge: null },
   { id: 'shops', nameKey: 'nav.shops', href: '/shops', icon: ShoppingCart, badge: null },
   { id: 'settings', nameKey: 'nav.settings', href: '/settings', icon: Settings, badge: null },
 ];

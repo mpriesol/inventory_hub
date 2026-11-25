@@ -5,7 +5,7 @@ import { Button } from '../ui/Button.new';
 
 const supplierKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
 
-function validPortal(value: string) {
+export function validPortal(value: string) {
   try {
     const url = new URL(value);
     return /^https?:\/\//i.test(value) && !/[#\s\\<>"']/.test(value)
@@ -20,16 +20,6 @@ export function supplierInputError(suppliers: SkuBrandSupplier[]) {
   if (new Set(names).size !== names.length) return 'duplicateSupplier';
   if (suppliers.some(supplier => supplier.url.trim() && !validPortal(supplier.url.trim()))) return 'invalidPortal';
   return '';
-}
-
-export function BrandSupplierLinks({ suppliers = [] }: { suppliers?: SkuBrandSupplier[] }) {
-  const { t } = useTranslation();
-  if (!suppliers.length) return <>—</>;
-  return <ul className="sku-brand-suppliers">{suppliers.map(supplier => <li key={supplier.name}>
-    {validPortal(supplier.url)
-      ? <a href={supplier.url} target="_blank" rel="noreferrer">{supplier.name}</a>
-      : <>{supplier.name} <small>({t('skuPolicy.registry.individualContact')})</small></>}
-  </li>)}</ul>;
 }
 
 export function BrandSuppliersEditor({ brands, suppliers, onChange }: {

@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { createSkuBrand, getSkuBrands, removeSkuBrand, restoreSkuBrand, SkuBrand, updateSkuBrand } from '../api/skuPolicy';
 import { BrandSuppliersEditor, supplierInputError } from '../components/product/SkuBrandSuppliers';
 import { SkuBrandTable } from '../components/product/SkuBrandTable';
+import { listSuppliers, SupplierSummary } from '../api/suppliers';
 import { Button } from '../components/ui/Button.new';
 
 type Editor = { action: 'create' } | { action: 'edit' | 'remove' | 'restore'; brand: SkuBrand };
@@ -96,6 +97,7 @@ function BrandEditor({ editor, brands, onDone, onCancel, onReload }: {
 
 export function SkuBrandsPage() {
   const { t } = useTranslation();
+  const [suppliers, setSuppliers] = useState<SupplierSummary[]>([]);
   const [brands, setBrands] = useState<SkuBrand[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -106,6 +108,11 @@ export function SkuBrandsPage() {
 
   useEffect(() => {
     const request = new AbortController();
+    listSuppliers().then(result => {
+      if (!request.signal.aborted) setSuppliers(result);
+    }).catch(() => {
+      if (!request.signal.aborted) setSuppliers([]);
+    });
     getSkuBrands(request.signal, true).then(result => {
       if (!request.signal.aborted) setBrands(result.brands);
     }).catch(() => {
@@ -156,7 +163,7 @@ export function SkuBrandsPage() {
       {message && <p role="status">{message}</p>}
       {editor && <BrandEditor editor={editor} brands={brands} onDone={done} onCancel={close} onReload={reload} />}
       <div hidden={!!editor}>
-        <SkuBrandTable brands={brands} onEdit={brand => open({ action: 'edit', brand })}
+        <SkuBrandTable brands={brands} suppliers={suppliers} onEdit={brand => open({ action: 'edit', brand })}
           onRemove={brand => open({ action: 'remove', brand })} onRestore={brand => open({ action: 'restore', brand })} />
       </div>
     </> : <p role="status">{t('common.loading')}</p>}

@@ -1,5 +1,7 @@
 # Supplier products and shop import
 
+Odkaz **Otvoriť v katalógu** z Prehľadu produktu otvorí zdroj a presný dodávateľský kód z parametrov `feed` a `code`. Priamy odkaz aj opätovné načítanie zachovávajú presný filter.
+
 The supplier catalog is a shared, read-only view of downloaded listing feeds. It is separate from local stock and from the existing **Upgates → Hub** product download. Native parsers support Paul Lange, Northfinder, Sloger, SK Profi Bike, Schindler, Cyklo Zitny, Silvini, Bike Brothers, Zookee and Husky. Other suppliers can use the configurable feed mapping; the catalog and import API remain the same.
 
 [ARIGA](ariga.md) supports its verified PDF invoice format and the `ariga-b2b`

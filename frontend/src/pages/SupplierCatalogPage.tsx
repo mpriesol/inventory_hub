@@ -19,9 +19,15 @@ export function SupplierCatalogPage() {
   const navigate = useNavigate();
   const [url, setUrl] = useSearchParams();
   const { t } = useTranslation();
-  const [feed, setFeed] = useState(url.get('feed') || 'products');
-  const [q, setQ] = useState(url.get('q') || '');
-  const [code, setCode] = useState('');
+  const feed = url.get('feed') || 'products';
+  const q = url.get('q') || '';
+  const code = url.get('code') || '';
+  function setUrlFilter(key: 'feed' | 'q' | 'code', value: string) {
+    const next = new URLSearchParams(url);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setUrl(next, { replace: true });
+  }
   const [ean, setEan] = useState('');
   const [manufacturer, setManufacturer] = useState('');
   const [listing, setListing] = useState('all');
@@ -33,7 +39,7 @@ export function SupplierCatalogPage() {
   const [grouped, setGrouped] = useState(true);
   const [showPrice, setShowPrice] = useState(true);
   const [showAvailability, setShowAvailability] = useState(true);
-  const [advanced, setAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useState(!!code);
   const [status, setStatus] = useState<CatalogStatus | null>(null);
   const [data, setData] = useState<CatalogPage | null>(null);
   const [loading, setLoading] = useState(true);
@@ -98,9 +104,8 @@ export function SupplierCatalogPage() {
     return () => { clearTimeout(timer); controller.abort(); };
   }, [base, feed, query, reload]);
 
-  useEffect(() => {
-    setPage(1); setUrl({ ...(q ? { q } : {}), feed }, { replace: true });
-  }, [q, code, ean, manufacturer, sort, listing, shop, feed, pageSize, grouped]);
+  useEffect(() => { if (code) setAdvanced(true); }, [code]);
+  useEffect(() => { setPage(1); }, [q, code, ean, manufacturer, sort, listing, shop, feed, pageSize, grouped]);
 
   useEffect(() => {
     const force = forceTargetRefresh.current;
@@ -205,7 +210,7 @@ export function SupplierCatalogPage() {
       {targetLoading ? t('catalog.checkingShopOptions') : target?.cache && <span>{t('catalog.shopOptionsChecked', { date: new Date(target.cache.checked_at).toLocaleString() })} · {t(target.cache.from_cache ? 'catalog.shopOptionsCached' : 'catalog.shopOptionsFetched')}<br />{t('catalog.shopOptionsExpiry', { date: new Date(target.cache.expires_at).toLocaleTimeString() })}</span>}
       <Button variant="secondary" size="sm" disabled={targetLoading || preparing || sending || activeImport} onClick={() => { forceTargetRefresh.current = true; setTargetReload(n => n + 1); }}>{t('catalog.refreshShopOptions')}</Button>
     </div>}
-    <div className="catalog-feed-bar"><label>{t('catalog.source')}<select value={feed} onChange={e => { setFeed(e.target.value); setManufacturer(''); }} disabled={refreshing || downloading || preparing}>{status?.sources.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}</select></label>
+    <div className="catalog-feed-bar"><label>{t('catalog.source')}<select value={feed} onChange={e => { setUrlFilter('feed', e.target.value); setManufacturer(''); }} disabled={refreshing || downloading || preparing}>{status?.sources.map(s => <option key={s.key} value={s.key}>{s.name}</option>)}</select></label>
       <div className="catalog-feed-state"><span className={`catalog-dot ${data?.run_id ? 'catalog-dot-good' : ''}`} />{data?.fetched_at ? t('catalog.lastDownload', { date: new Date(data.fetched_at).toLocaleString() }) : t('catalog.notDownloaded')}
         {status?.status === 'failed' && <span className="catalog-error">{t('catalog.lastRefreshFailed')}</span>}</div>
       <Button variant="secondary" icon={<Download size={16} />} loading={downloading} disabled={!source?.configured || refreshing || preparing} onClick={downloadSource}>{t('catalog.downloadSource')}</Button>
@@ -215,12 +220,12 @@ export function SupplierCatalogPage() {
     {notice && <div role="status" className="catalog-notice">{message(notice)}</div>}
     {status && !source?.supported && <div className="catalog-empty"><Package size={36} /><h2>{t('catalog.parserPending')}</h2><p>{t('catalog.parserPendingHelp')}</p></div>}
     {source?.supported && <>
-      <div className="catalog-tools"><label className="catalog-search"><Search size={18} /><input aria-label={t('catalog.search')} placeholder={t('catalog.searchPlaceholder')} value={q} onChange={e => setQ(e.target.value)} /></label>
+      <div className="catalog-tools"><label className="catalog-search"><Search size={18} /><input aria-label={t('catalog.search')} placeholder={t('catalog.searchPlaceholder')} value={q} onChange={e => setUrlFilter('q', e.target.value)} /></label>
         <select aria-label={t('catalog.manufacturer')} value={manufacturer} onChange={e => setManufacturer(e.target.value)}><option value="">{t('catalog.allBrands')}</option>{data?.manufacturers.map(m => <option key={m}>{m}</option>)}</select>
         <select aria-label={t('catalog.listingFilter')} value={listing} onChange={e => setListing(e.target.value)}><option value="all">{t('catalog.allProducts')}</option><option value="unlisted" disabled={!shop}>{t('catalog.notLinked')}</option><option value="listed" disabled={!shop}>{t('catalog.listed')}</option><option value="warnings">{t('catalog.withWarnings')}</option></select>
         <Button variant="secondary" icon={<Sliders size={16} />} aria-expanded={advanced} onClick={() => setAdvanced(!advanced)}>{t('catalog.options')}</Button></div>
       {advanced && <div className="catalog-settings catalog-panel"><div><h3>{t('catalog.searchAndView')}</h3><div className="catalog-fields">
-        <label>{t('catalog.exactCode')}<input value={code} onChange={e => setCode(e.target.value)} /></label><label>{t('catalog.exactEan')}<input value={ean} onChange={e => setEan(e.target.value)} /></label>
+        <label>{t('catalog.exactCode')}<input value={code} onChange={e => setUrlFilter('code', e.target.value)} /></label><label>{t('catalog.exactEan')}<input value={ean} onChange={e => setEan(e.target.value)} /></label>
         <label>{t('catalog.sort')}<select value={sort} onChange={e => setSort(e.target.value)}>{['name', 'code', 'manufacturer'].map(s => <option key={s} value={s}>{t(`catalog.sortBy.${s}`)}</option>)}</select></label>
         <label>{t('catalog.pageSize')}<select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}>{[25, 50, 100].map(n => <option key={n}>{n}</option>)}</select></label></div>
         <div className="catalog-check-options"><label><input type="checkbox" checked={grouped} onChange={e => setGrouped(e.target.checked)} />{t('catalog.groupVariants')}</label><label><input type="checkbox" checked={showPrice} onChange={e => setShowPrice(e.target.checked)} />{t('catalog.showPrices')}</label><label><input type="checkbox" checked={showAvailability} onChange={e => setShowAvailability(e.target.checked)} />{t('catalog.showAvailability')}</label></div></div>

@@ -262,6 +262,7 @@
     "not_configured": "Not Configured"
   },
   "nav": {
+    "brands": "Brands",
     "dashboard": "Dashboard",
     "receiving": "Receiving",
     "stock": "Stock",
@@ -4836,7 +4837,8 @@
       "addSupplier": "Add supplier",
       "duplicateSupplier": "Enter each supplier only once.",
       "invalidPortal": "Enter the public B2B portal address (HTTP or HTTPS). Remove credentials, tokens, temporary redirects and fragments.",
-      "showSources": "Sources ({{count}})"
+      "b2bSource": "B2B source",
+      "feedSource": "Feed source"
     },
     "help": "New stock-item SKUs use the manufacturer's two-letter prefix and exact product code. Supplier item codes are stored separately. Existing SKUs stay unchanged.",
     "brand": "Manufacturer or service namespace",

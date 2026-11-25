@@ -497,7 +497,7 @@ async def automatic_manufacturer_identity(db, row, supplier, mappings, reference
     if not unchanged_feed_leaf(row, supplier):
         return None, None
     from inventory_hub.services import feed_mapping
-    from inventory_hub.services.manufacturer_references import verified_manufacturer_item
+    from inventory_hub.services.manufacturer_references import native_manufacturer_item, verified_manufacturer_item
     source, values = row['source'], row['values']
     feed_key = source.get('feed_key', 'products')
     # The frozen mapping assertion is enough by itself. A later confirmation
@@ -510,10 +510,11 @@ async def automatic_manufacturer_identity(db, row, supplier, mappings, reference
         proof = feed_mapping.confirmed_manufacturer_field(source['raw_fields'], mappings[key])
         if proof:
             identity = identity_from_mapping(proof, proof['value'], values['brand'], supplier, feed_key)
-    reference = verified_manufacturer_item(source, references)
-    if identity and reference and identity['source_code'] != reference['source_code']:
+    candidates = [item for item in (identity, verified_manufacturer_item(source, references),
+                                    native_manufacturer_item(source)) if item]
+    if len({item['source_code'] for item in candidates}) > 1:
         return None, None
-    candidate = identity or reference
+    candidate = candidates[0] if candidates else None
     source_codes = {source.get('manufacturer_code')}
     if row['provenance'].get('manufacturer_code') not in AUTO_SKU_SOURCES:
         source_codes.add(values.get('manufacturer_code'))
