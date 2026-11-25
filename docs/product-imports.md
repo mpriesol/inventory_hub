@@ -48,7 +48,7 @@ New drafts use the valid promotional purchase quote from a Paul Lange listing in
 
 For Paul Lange in EUR, an automatic sale price calculated with a brand multiplier other than 1 rounds down to a gross ending of .00, .20, .50, or .90 in the same euro. For example, 23.44 becomes 23.20. Below .20, prices retain a positive amount. Manual prices and the direct retail option keep their specified values. Shops that store net prices receive the gross result converted at the item's VAT rate.
 
-New feed and AI descriptions omit the recognizable general preface from the Shimano manual supplied by Paul Lange. The specific manufacturer warnings appear in a clearly labeled section, and the original warning text remains in the source record.
+New feed and AI descriptions omit the recognizable general preface from the Shimano manual supplied by Paul Lange. The specific manufacturer warnings appear in a clearly labeled section, and the original warning text remains in the source record. The draft sanitizes embedded videos and other active HTML from Paul Lange feed descriptions, keeping the supported formatting. Unfrozen drafts show this cleanup when reopened. The original feed and validation of manually entered and AI-generated HTML are retained.
 
 ## Sloger B2B before import preparation
 

@@ -34,6 +34,22 @@ def document(rows=None):
 
 
 class ProductImportUnitTests(unittest.TestCase):
+    def test_paul_lange_feed_embeds_are_cleaned_in_unfrozen_drafts(self):
+        original = '<p><strong>Bezpečný popis</strong></p><iframe src="https://example.test/video"></iframe>'
+        item = row(description_html=original)
+        item['provenance']['description_html'] = 'feed'
+        doc = document([item])
+        draft = SimpleNamespace(supplier='paul-lange', status='draft', document=doc)
+        with patch.object(service, 'publication_previews', return_value=[]):
+            projected = asyncio.run(service.rechecked_document(None, draft))
+        cleaned = projected['rows'][0]
+        self.assertEqual(cleaned['values']['description_html'], '<p><strong>Bezpečný popis</strong></p>')
+        self.assertNotIn('ai_unsafe_html', cleaned['errors'])
+        self.assertEqual(item['values']['description_html'], original)
+        item['manual_fields'] = ['description_html']
+        service.validate_rows(doc)
+        self.assertIn('ai_unsafe_html', item['errors'])
+
     def test_only_confirmed_manufacturer_mapping_allocates_its_exact_code(self):
         item = row(manufacturer_code='00042-M')
         item['source'].update(manufacturer_code='00042-M', mapping_provenance={'fields': {'manufacturer_code': {
