@@ -10,7 +10,7 @@ import re
 from collections import Counter, OrderedDict, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,7 +25,7 @@ from inventory_hub.database import get_session_context
 from inventory_hub.db_models import IdentifierType, Product, ProductGroup, ProductIdentifier, Shop, Supplier
 from inventory_hub.db_models_ext import ShopProduct, ShopProductContent
 from inventory_hub.services.catalog import CatalogError, selected_products, supplier_config
-from inventory_hub.services.catalog_html import clean_description
+from inventory_hub.services.catalog_html import clean_description, publication_safety
 from inventory_hub.services.catalog_identity import cached_identities, connection_fingerprint, parent_shop_code, read_cache
 from inventory_hub.services.catalog_sort import variant_sort_key
 from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability, resolve_catalog_availability
@@ -413,6 +413,44 @@ def _money(value: Decimal) -> float:
     return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def stale_paul_lange_listing(product: CatalogProduct, *, at: datetime | None = None) -> bool:
+    if product.supplier != "paul-lange":
+        return False
+    at = at or now()
+    observed = product.fetched_at
+    return observed is None or observed.tzinfo is None or not at - timedelta(days=2) < observed <= at
+
+
+def effective_purchase_prices(product: CatalogProduct) -> tuple[Decimal | None, Decimal | None]:
+    source = product.prices
+    regular = source.purchase_net, source.purchase_gross
+    if product.supplier != "paul-lange" or source.vat_percent is None:
+        return regular
+    net, gross = source.discount_net, source.discount_gross
+    net = net if net is not None and net.is_finite() and net > 0 else None
+    gross = gross if gross is not None and gross.is_finite() and gross > 0 else None
+    if (net is None and gross is None) or stale_paul_lange_listing(product):
+        return regular
+    factor = 1 + source.vat_percent / 100
+    if net is not None and gross is not None and abs(gross - net * factor) > Decimal("0.02"):
+        return regular
+    net = net if net is not None else (gross / factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    gross = gross if gross is not None else (net * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if ((source.purchase_net is not None and source.purchase_net > 0 and net >= source.purchase_net)
+            or (source.purchase_gross is not None and source.purchase_gross > 0 and gross >= source.purchase_gross)):
+        return regular
+    return (net, gross) if net > 0 and gross > 0 else regular
+
+
+def _round_paul_lange_sale(gross: Decimal) -> Decimal:
+    euros = gross.to_integral_value(rounding=ROUND_DOWN)
+    for ending in ("0.90", "0.50", "0.20", "0.00"):
+        candidate = euros + Decimal(ending)
+        if 0 < candidate <= gross:
+            return candidate
+    return gross.quantize(Decimal("0.1"), rounding=ROUND_DOWN) or gross
+
+
 def _prices(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with_vat: bool, sale_gross: Decimal | None = None) -> list[dict]:
     source = product.prices
     if source.currency != options.currency:
@@ -433,16 +471,22 @@ def _prices(product: CatalogProduct, options: ShopImportOptions, cfg: dict, with
     coefficient = Decimal(str(coefficients.get((product.brand or "").strip().upper(), 1))) if options.pricing == "configured" else Decimal(1)
     if not coefficient.is_finite() or coefficient <= 0:
         raise ValueError("invalid_price_coefficient")
+    factor = 1 + source.vat_percent / 100
     if sale_gross is not None:
         if not sale_gross.is_finite() or sale_gross <= 0:
             raise ValueError("invalid_sale_price")
-        sale = sale_gross if with_vat else sale_gross / (1 + source.vat_percent / 100)
+        sale = sale_gross if with_vat else sale_gross / factor
     else:
         sale = retail * coefficient
+        if product.supplier == "paul-lange" and source.currency == "EUR" and coefficient != 1:
+            gross = source.retail_gross * coefficient if source.retail_gross else sale * factor
+            rounded = _round_paul_lange_sale(gross)
+            sale = rounded if with_vat else rounded / factor
     price = {"language": options.language, "pricelists": [{"name": options.pricelist, "price_original": _money(sale)}]}
     if retail is not None and retail > 0:
         price["price_common"] = _money(retail)
-    purchase = source.purchase_gross if with_vat else source.purchase_net
+    purchase_net, purchase_gross = effective_purchase_prices(product)
+    purchase = purchase_gross if with_vat else purchase_net
     if purchase is not None:
         price["price_purchase"] = _money(purchase)
     return [price]
@@ -488,7 +532,7 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
         payload["code"] = parent_code
         payload["descriptions"] = [{"language": options.language, "active_yn": False, "title": item.name}]
         if options.include_description:
-            payload["descriptions"][0]["long_description"] = clean_description("\n".join(filter(None, [first.description, first.safety_information])))
+            payload["descriptions"][0]["long_description"] = clean_description("\n".join(filter(None, [first.description, publication_safety(first)])))
         payload["vats"] = {options.language: float(first.prices.vat_percent)}
         if first.brand:
             payload["manufacturer"] = first.brand
@@ -531,6 +575,8 @@ def build_item(products: list[CatalogProduct], options: ShopImportOptions, cfg: 
             item.warnings.append("primary_ean_exported")
         if any(p.id in sale_price_overrides for p in products):
             item.warnings.append("manual_sale_price")
+        if any(p.fetched_at and stale_paul_lange_listing(p) for p in products):
+            item.warnings.append("paul_lange_listing_stale")
         for product in products:
             prices = _prices(product, options, cfg, with_vat, sale_price_overrides.get(product.id))[0]
             if prices.get("price_purchase") is not None and prices["pricelists"][0]["price_original"] < prices["price_purchase"]:
@@ -620,7 +666,7 @@ async def create_preview(db: AsyncSession, shop: str, request: ShopImportPreview
             sale = None
         price_lines.append(ImportPriceLine(product_id=product.id, code=product.shop_code, name=product.name,
             image=product.images[0] if product.images else None, attributes=product.variant_attributes,
-            retail_gross=product.prices.retail_gross, purchase_net=product.prices.purchase_net,
+            retail_gross=product.prices.retail_gross, purchase_net=effective_purchase_prices(product)[0],
             sale_gross=sale, overridden=product.id in request.sale_price_overrides,
             blocked=bool(product.import_blockers), warnings=product.warnings))
     codes, eans, shop_check = await asyncio.to_thread(checked_remote_identities, shop, client, refresh=request.refresh_shop)

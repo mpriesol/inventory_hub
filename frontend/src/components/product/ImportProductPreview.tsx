@@ -6,6 +6,7 @@ import { catalogImageUrl } from '../../api/catalog';
 import { ProductThumb } from './ProductDisplay';
 import { stockCardSafeUrl } from './stockCardHelpers';
 import { Button } from '../ui/Button.new';
+import { pendingManufacturerSku } from '../../pages/productImportGrid';
 
 export function ImportProductSummary({ row }: { row: ProductImportRow }) {
   const { t } = useTranslation();
@@ -21,7 +22,7 @@ export function ImportProductSummary({ row }: { row: ProductImportRow }) {
       <button type="button" onClick={() => setLarge(!large)} aria-label={c('enlargeImage')} aria-expanded={large} disabled={!v.images.length}>
         <ProductThumb key={v.images[selected]} url={catalogImageUrl(v.images[selected])} name={v.name} size={80} />
       </button>
-      <div><strong>{v.name}</strong><p>{v.brand} · {v.code}</p><p>{c('sourceCategory')}: {row.source_category || '—'}</p>
+      <div><strong>{v.name}</strong><p>{v.brand} · {pendingManufacturerSku(row) ? t('productImport.supplierCodeLabel', { code: v.supplier_code }) : v.code}</p><p>{c('sourceCategory')}: {row.source_category || '—'}</p>
         {stockCardSafeUrl(row.source_url) && <a href={stockCardSafeUrl(row.source_url)!} target="_blank" rel="noopener noreferrer">{c('supplierProduct')}</a>}
       </div>
     </div>

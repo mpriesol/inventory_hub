@@ -31,6 +31,9 @@ export const IMPORT_COLUMNS: ImportColumn[] = [
 export const FAMILY_IMPORT_FIELDS = new Set<ImportField>(['group_name', 'brand', 'description_html', 'short_description', 'seo_title', 'seo_description', 'seo_url', 'category_code', 'parameters', 'metadata', 'ai_enabled', 'ai_category_profile', 'target_shops', 'target_category_codes']);
 export type ImportChanges = Record<number, Partial<ImportValues>>;
 export const effectiveImportValues = (row: ProductImportRow, changes: ImportChanges) => ({ ...row.values, ...changes[row.id] });
+export const pendingManufacturerSku = (row: ProductImportRow) =>
+  !row.hub_product_id && !row.expected_hub_product_id && row.identity_decision?.action !== 'link'
+  && (row.sku_preview?.status === 'blocked' || row.sku_preview?.status === 'conflict');
 export function importValueText(value: ImportValue | undefined): string {
   if (value === undefined || value === null) return '';
   if (Array.isArray(value)) return value.map(item => typeof item === 'string' ? item : `${item.name}: ${item.value}`).join('\n');

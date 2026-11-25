@@ -32,7 +32,7 @@ class ImportMappingTests(unittest.TestCase):
     def test_supplier_coefficients_do_not_inherit_another_supplier_defaults(self):
         p = product()
         p.brand = "SHIMANO"
-        self.assertEqual(imports._prices(p, ShopImportOptions(), {}, True)[0]["pricelists"][0]["price_original"], 108.24)
+        self.assertEqual(imports._prices(p, ShopImportOptions(), {}, True)[0]["pricelists"][0]["price_original"], 108.20)
         p.supplier = "sloger"
         p.prices.purchase_net = p.prices.purchase_gross = None
         cfg = {"adapter_settings": {"price_coefficients": {" shimano ": "0.95"}}}
@@ -71,6 +71,36 @@ class ImportMappingTests(unittest.TestCase):
         self.assertNotIn("contact@example.test", description)
         self.assertIn("contact@example.test", p.manufacturer_description)
 
+    def test_configured_paul_lange_price_uses_the_lower_gross_ending(self):
+        p = product()
+        p.prices.retail_gross, p.prices.retail_net = Decimal("29.30"), Decimal("23.82")
+        cfg = {"adapter_settings": {"price_coefficients": {"TEST": "0.8"}}}
+        for with_vat, expected in [(True, 23.20), (False, 18.86)]:
+            price = imports._prices(p, ShopImportOptions(), cfg, with_vat)[0]
+            self.assertEqual(price["pricelists"][0]["price_original"], expected)
+        bypass = imports._prices(p, ShopImportOptions(pricing="retail"), cfg, True)[0]
+        self.assertEqual(bypass["pricelists"][0]["price_original"], 29.30)
+
+    def test_paul_lange_uses_only_a_current_consistent_purchase_promotion(self):
+        at = imports.now()
+        for age, net, gross, expected in [
+            (timedelta(hours=1), "48", "59.04", ("48", "59.04")),
+            (timedelta(hours=1), None, "59.04", ("48", "59.04")),
+            (timedelta(hours=1), "48", "62.30", ("60", "73.80")),
+            (timedelta(hours=1), "61", None, ("60", "73.80")),
+            (timedelta(hours=1), None, None, ("60", "73.80")),
+            (timedelta(days=2), "48", "59.04", ("60", "73.80")),
+        ]:
+            with self.subTest(age=age, net=net, gross=gross), patch.object(imports, "now", return_value=at):
+                p = product(fetched_at=at - age)
+                p.prices.discount_net = Decimal(net) if net is not None else None
+                p.prices.discount_gross = Decimal(gross) if gross is not None else None
+                original = p.prices.model_dump()
+                for with_vat, quote in zip((False, True), expected):
+                    prices = imports._prices(p, ShopImportOptions(), {}, with_vat)[0]
+                    self.assertEqual(prices["price_purchase"], float(quote))
+                self.assertEqual(p.prices.model_dump(), original)
+
     def test_api_rejects_invalid_manual_prices(self):
         for value in ("0", "-1", "NaN", "Infinity", "12.345", "1000000000000"):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -79,7 +109,7 @@ class ImportMappingTests(unittest.TestCase):
     def test_gross_and_net_prices_reuse_coefficients_and_omit_stock(self):
         cfg = {"adapter_settings": {"price_coefficients": {"TEST": "0.9"}}}
         p = product()
-        for with_vat, sale, purchase in [(True, 110.7, 73.8), (False, 90, 60)]:
+        for with_vat, sale, purchase in [(True, 110.50, 73.8), (False, 89.84, 60)]:
             item = imports.build_item([p], ShopImportOptions(), cfg, with_vat)
             self.assertEqual(item.status, "ready")
             price = item.payload["prices"][0]

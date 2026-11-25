@@ -17,6 +17,7 @@ from inventory_hub.services import ai_content as service, catalog_import as impo
 from inventory_hub.services.ai_content_upgates import content_fields
 from inventory_hub.services.ai_content_validation import overlay, validate_content, text_of
 from inventory_hub.services.catalog import CatalogError, selected_products
+from inventory_hub.services.catalog_html import publication_safety
 from inventory_hub.services.catalog_merchandising import category_chain, availability_policy, apply_availability
 from inventory_hub.services.upgates import UpgatesClient, UpgatesError
 from inventory_hub.services.merchandising_write_guard import require_target_available
@@ -171,7 +172,7 @@ async def prepare(db, job, request):
     enriched = overlay(item, {'content':job.output, 'active_after_import':False,
         'registered_parameters':bool((ctx['resolved'].get('category') or {}).get('parameters')),
         'meta_common':await asyncio.to_thread(content_fields, ctx['shop'], client) if 'metas' in request.fields else {},
-        'safety':'\n'.join(dict.fromkeys(p.safety_information for p in products if p.safety_information))}, language).payload
+        'safety':'\n'.join(dict.fromkeys(publication_safety(p) for p in products if p.safety_information))}, language).payload
     if 'categories' in request.fields:
         options = await asyncio.to_thread(imports.cached_import_options, ctx['shop'], client)
         if not ctx['options'].get('category_code'):

@@ -604,8 +604,13 @@ async function render(entry) {
   assert.equal(new URLSearchParams(receiptRouter.state.location.search).get('session'), '42');
   assert.equal(new URLSearchParams(receiptRouter.state.location.search).get('supplier'), 'sk-profi-bike');
   assert.deepEqual(calls.slice(beforeReturn).map(call => [call.method, call.path]), [['PUT', '/api/product-imports/test-draft']], 'Returning saves only the draft and performs no publication or stock operation');
-  server = { ...server, status:'draft', supplier_id:8, receiving_origin:null, publication:null, publication_result:null, rows:[{...clone(initial[0]), values:{...values(1),brand:'Topeak',manufacturer_code:'0001410',supplier_code:'SUP-900',target_shops:[],sale_gross:null,vat_percent:null},errors:['missing_price','missing_vat'],hub_errors:[]}]};
+  server = { ...server, status:'draft', supplier_id:8, receiving_origin:null, publication:null, publication_result:null, rows:[{...clone(initial[0]), values:{...values(1),brand:'Topeak',manufacturer_code:'0001410',supplier_code:'SUP-900',target_shops:[],sale_gross:null,vat_percent:null},sku_preview:{status:'blocked',sku:null,reasons:['sku_identity_required']},errors:['missing_price','missing_vat'],hub_errors:[]}]};
   await render('/product-import?draft=test-draft&case=sku-policy');
+  const pendingCode = document.querySelector('[data-row="1"] td.import-code');
+  assert(pendingCode.textContent.includes('SUP-900') && !pendingCode.textContent.includes('PL-1'));
+  await click(label('Náhľad produktu: SUP-900'));
+  assert(document.querySelector('[role="dialog"]').textContent.includes('Kód dodávateľa SUP-900'));
+  await key(document.querySelector('[role="dialog"]'),'Escape');
   const beforeIdentity = calls.length;
   await click(document.querySelector('[data-testid="import-sku-1"]'));
   const dialog=document.querySelector('[role="dialog"]'); assert(dialog);
@@ -621,6 +626,7 @@ async function render(entry) {
   await click(dialog.querySelector('[data-testid="import-sku-apply"]'));
   assert.equal(document.querySelector('[role="dialog"]'),null);
   assert.equal(server.rows[0].values.code, 'TP-0001410', 'SKU confirmation immediately saves the server-allocated code to the draft');
+  assert(document.querySelector('[data-row="1"] td.import-code').textContent.includes('TP-0001410'));
   assert(!calls.slice(beforeIdentity).some(call => call.path.endsWith('/save')), 'Saving the SKU does not create a Hub card');
   assert(!button('Uložiť produkty do Hubu').disabled,'A basic card is savable despite missing shop price/VAT');
   await click(button('Uložiť produkty do Hubu'));
