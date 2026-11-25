@@ -22,7 +22,7 @@ from inventory_hub.db_models import Product, Shop, Supplier, SupplierProduct
 from inventory_hub.file_access import code_component, confined_path, stored_document_path
 from inventory_hub.invoice_archive_types import ArchiveLine, ArchiveMetadata, InvoiceReconcileInput
 from inventory_hub.settings import settings
-from inventory_hub.services.invoice_issuers import issuer_key
+from inventory_hub.services.invoice_issuers import indexed_invoice_key, issuer_key
 
 
 class InvoiceArchiveError(Exception):
@@ -508,7 +508,7 @@ def _index_entries(root, supplier):
     for row in rows:
         if not isinstance(row, dict):
             continue
-        key = str(row.get('original_number') or row.get('number') or row.get('invoice_id') or '')
+        key = indexed_invoice_key(supplier, row)
         if not key:
             continue
         # Mutable processing/download fields do not define a document. Validate
@@ -680,6 +680,8 @@ async def _archive_upload(supplier_code, result, invoice_number=None):
             supplier = await resolve_supplier(db, supplier_code)
             key = (result.get('invoice_number') or invoice_number or Path(result['csv_path']).stem
                    if result.get('csv_path') else invoice_number or Path(result['filename']).stem)
+            if supplier_code == 'vavrys' and result.get('csv_path'):
+                key = Path(result['csv_path']).stem
             # All supplier upload paths share the retirement/reconciliation fence.
             # A source archived while this job waited must not be recreated by
             # the original-only path, or endlessly retried as a missing CSV.

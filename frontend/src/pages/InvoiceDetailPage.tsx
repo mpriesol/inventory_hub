@@ -128,6 +128,7 @@ export function InvoiceDetailPage() {
     event.preventDefault(); if (!invoice || !edit || working.current || pending) return;
     working.current = true; setBusy(true); setError(''); setMessage('');
     const body: InvoiceMetadataChange = { expected_revision: invoice.finance?.payment_revision ?? invoice.payment_revision, due_date: edit.due_date || null, notes: edit.notes || null };
+    if (edit.payment_needs_review !== !!invoice.finance?.needs_review) body.payment_needs_review = edit.payment_needs_review;
     if (!['supplier', 'shop'].includes(invoice.source_kind || '')) {
       body.invoice_number = edit.invoice_number || null; body.invoice_date = edit.invoice_date || null;
       if (!invoice.finance?.payments.length) { body.total_amount = decimalInput(edit.total_amount) || null; body.vat_rate = decimalInput(edit.vat_rate) || null; body.vat_included = edit.vat_included; body.currency = edit.currency || null; }
