@@ -736,6 +736,7 @@
       "brandUrlsHelp": "Jeden odkaz na riadok. Všetky značky tvoria spoločný katalóg.",
       "products": "Feed: Produkty",
       "productsDesc": "XML/CSV feed pre import nových produktov a aktualizáciu informácií",
+      "schedulePaulLange": "Obnovovať produktový feed každých 24 hodín",
       "stock": "Feed: Sklad",
       "stockDesc": "XML/CSV feed pre synchronizáciu stavov zásob",
       "mode": "Režim",
@@ -6345,6 +6346,7 @@
     "component": {
       "api": "API Hubu",
       "husky": "Husky",
+      "supplier_catalog": "Produktové feedy",
       "supplier_availability": "Načítanie dodávateľov",
       "attention": "Upozornenia"
     },
@@ -6357,6 +6359,8 @@
     },
     "events": {
       "http_request": "API požiadavka",
+      "catalog_refresh_completed": "Produktový feed obnovený",
+      "catalog_refresh_failed": "Obnova produktového feedu zlyhala",
       "availability_pass_started": "Načítanie spustené",
       "availability_pass_completed": "Spracovanie dokončené",
       "availability_pass_failed": "Načítanie zlyhalo",

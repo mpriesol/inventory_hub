@@ -86,6 +86,7 @@ async def lifespan(app: FastAPI):
     processing_worker = None
     publication_worker = None
     supplier_availability_worker = None
+    supplier_catalog_worker = None
     stock_sync_worker = None
     fifo_cost_worker = None
     invoice_archive_worker = None
@@ -108,6 +109,8 @@ async def lifespan(app: FastAPI):
         publication_worker = asyncio.create_task(publish_stock(), name="stock-publication")
         from inventory_hub.services.supplier_availability_worker import run as refresh_supplier_availability
         supplier_availability_worker = asyncio.create_task(refresh_supplier_availability(), name="supplier-availability")
+        from inventory_hub.services.supplier_catalog_worker import run as refresh_supplier_catalog
+        supplier_catalog_worker = asyncio.create_task(refresh_supplier_catalog(), name="supplier-catalog")
         from inventory_hub.services.stock_sync_worker import run as sync_stock
         stock_sync_worker = asyncio.create_task(sync_stock(), name="stock-sync")
         from inventory_hub.services.fifo_cost_worker import run as sync_fifo_costs
@@ -133,7 +136,8 @@ async def lifespan(app: FastAPI):
         publication_worker.cancel()
         with suppress(asyncio.CancelledError):
             await publication_worker
-    for background_worker in (catalog_worker, source_card_worker, supplier_availability_worker, stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker, atomer_availability_worker):
+    for background_worker in (catalog_worker, source_card_worker, supplier_availability_worker, supplier_catalog_worker,
+                              stock_sync_worker, fifo_cost_worker, invoice_archive_worker, webhook_worker, atomer_availability_worker):
         if background_worker:
             background_worker.cancel()
             with suppress(asyncio.CancelledError):

@@ -42,6 +42,8 @@ Tento prehľad opisuje aktuálnu implementáciu v repozitári. Výsledok konkré
 
 Zdroj navigácie: [App.tsx](frontend/src/App.tsx) a [exporty stránok](frontend/src/pages/index.ts). Názov súboru `PlaceholderPages.tsx` sám neurčuje stav exportovanej stránky.
 
+Samostatný worker obnovuje [produktový feed Paul Lange](docs/supplier-catalog.md) každých 24 hodín. Stav vidno v katalógu a v prevádzkovom logu. Plán sa dá vypnúť v nastaveniach zdroja **Feedy → Produkty**.
+
 Spoločné [upozornenia](docs/attention.md) sú na `/settings/attention` a v Prehľade: trvalý stav, ignorovanie incidentu, pravidlá podľa typu/zdroja a chránené API pre ďalšie služby. Prvým producentom sú výsledky dodávateľských načítaní; ostatné služby zatiaľ nie sú automaticky zapojené.
 
 ## Architektúra a aktívne moduly

@@ -736,6 +736,7 @@
       "brandUrlsHelp": "One URL per line. All brands form a shared catalog.",
       "products": "Feed: Products",
       "productsDesc": "XML/CSV feed for importing new products and updating information",
+      "schedulePaulLange": "Refresh the product feed every 24 hours",
       "stock": "Feed: Stock",
       "stockDesc": "XML/CSV feed for synchronizing stock levels",
       "mode": "Mode",
@@ -6342,6 +6343,7 @@
     "component": {
       "api": "Hub API",
       "husky": "Husky",
+      "supplier_catalog": "Product feeds",
       "supplier_availability": "Supplier refresh",
       "attention": "Attention"
     },
@@ -6354,6 +6356,8 @@
     },
     "events": {
       "http_request": "API request",
+      "catalog_refresh_completed": "Product feed refreshed",
+      "catalog_refresh_failed": "Product feed refresh failed",
       "availability_pass_started": "Refresh started",
       "availability_pass_completed": "Processing completed",
       "availability_pass_failed": "Refresh failed",

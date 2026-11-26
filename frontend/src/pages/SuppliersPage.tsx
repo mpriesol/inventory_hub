@@ -997,6 +997,7 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
   const FeedCard = ({ feedKey, label, description }: { feedKey: string; label: string; description: string }) => {
     const source: {
       mode: 'remote' | 'local' | 'ariga-b2b';
+      scheduled_refresh?: boolean;
       local_path?: string | null;
       remote?: Partial<SupplierConfig['feeds']['sources'][string]['remote']>;
     } = sources[feedKey] || { mode: 'remote', remote: { url: '', auth: { mode: 'none' } } };
@@ -1044,6 +1045,17 @@ function FeedsTab({ config, updateConfig, showPasswords, supplier }: TabProps & 
             {supplier === 'ariga' && feedKey === 'products' && <option value="ariga-b2b">{t('suppliers.ariga.mode')}</option>}
           </select>
         </div>
+
+        {supplier === 'paul-lange' && feedKey === 'products' && source.mode === 'remote' && (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={source.scheduled_refresh ?? true}
+              onChange={event => updateSource(feedKey, { scheduled_refresh: event.target.checked })}
+            />
+            {t('suppliers.feeds.schedulePaulLange')}
+          </label>
+        )}
 
         {source.mode === 'ariga-b2b' && supplier === 'ariga' && (
           <div className="space-y-3">

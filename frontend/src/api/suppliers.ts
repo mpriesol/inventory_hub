@@ -50,6 +50,7 @@ export interface SupplierConfig {
     current_key: string;
     sources: Record<string, {
       mode: 'remote' | 'local' | 'ariga-b2b';
+      scheduled_refresh?: boolean;
       local_path: string | null;
       remote: {
         url: string;
