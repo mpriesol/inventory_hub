@@ -300,7 +300,8 @@ async def store_catalog_records(db, feed, run, records, observed_at, *, deactiva
 
 
 async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "products", *,
-                          source_path: Path | None = None, expected_mapping_revision: int | None = None) -> dict:
+                          source_path: Path | None = None, expected_mapping_revision: int | None = None,
+                          max_download_seconds: float | None = None) -> dict:
     from inventory_hub.services import feed_mapping
     from inventory_hub.feed_mapping_types import MappingDefinition
     cfg = supplier_config(supplier)
@@ -339,7 +340,8 @@ async def refresh_catalog(db: AsyncSession, supplier: str, feed_key: str = "prod
         run = SupplierFeedRun(feed_id=feed.id, run_number=run_number, started_at=started, status=FeedRunStatus.running)
         db.add(run)
         await db.flush()
-        path = source_path or await asyncio.to_thread(_download, supplier, source, feed_key)
+        path = source_path or await asyncio.to_thread(
+            _download, supplier, source, feed_key, max_elapsed_seconds=max_download_seconds)
         if mapping:
             records = await asyncio.to_thread(feed_mapping.parse_mapped, path, supplier, cfg, feed_key,
                 MappingDefinition.model_validate(mapping.definition), mapping.revision, PARSERS.get(parser_name))

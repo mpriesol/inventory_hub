@@ -85,7 +85,7 @@ function LogContent() {
     <form className="operation-log-filters" onSubmit={apply}>
       {fields.map(key => <label key={key}>{t(`operationLogs.fields.${key}`)}
         {key === 'level' || key === 'component' ? <select data-testid={`log-${key}`} value={filters[key]} onChange={event => setFilters({ ...filters, [key]: event.target.value })}>
-          <option value="">{t('operationLogs.all')}</option>{(key === 'level' ? ['info', 'warning', 'error'] : ['api', 'husky', 'supplier_availability', 'attention']).map(value => <option key={value} value={value}>{t(`operationLogs.${key}.${value}`)}</option>)}
+          <option value="">{t('operationLogs.all')}</option>{(key === 'level' ? ['info', 'warning', 'error'] : ['api', 'husky', 'supplier_catalog', 'supplier_availability', 'attention']).map(value => <option key={value} value={value}>{t(`operationLogs.${key}.${value}`)}</option>)}
         </select> : <input data-testid={`log-${key}`} value={filters[key]} type={(key === 'run_id' || key === 'attention_id') ? 'number' : key === 'since' || key === 'until' ? 'datetime-local' : 'text'} min={(key === 'run_id' || key === 'attention_id') ? 1 : undefined}
           maxLength={key === 'request_id' ? 32 : 100}
           onChange={event => setFilters({ ...filters, [key]: event.target.value })} />}

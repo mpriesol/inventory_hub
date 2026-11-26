@@ -44,7 +44,7 @@ global.fetch = async (path, init = {}) => {
   let data;
   let status = 200;
   if (url.pathname === '/api/suppliers') data = [];
-  else if (['/api/suppliers/fixture/config', '/api/suppliers/sloger/config', '/api/suppliers/husky/config', '/api/suppliers/ariga/config'].includes(url.pathname)) {
+  else if (['/api/suppliers/fixture/config', '/api/suppliers/sloger/config', '/api/suppliers/husky/config', '/api/suppliers/ariga/config', '/api/suppliers/paul-lange/config'].includes(url.pathname)) {
     if (init.method === 'PUT') {
       const body = JSON.parse(init.body);
       writes.push(body);
@@ -304,6 +304,22 @@ async function input(element, value) {
   assert.equal(document.getElementById('ariga-b2b-password').value, '');
   assert.equal(document.getElementById('ariga-b2b-password').placeholder, 'Uložené - ponechať bez zmeny');
   assert(button('Uložiť').disabled, 'Reopening redacted ARIGA credentials creates no changes');
+
+  stored = structuredClone(original);
+  stored.feeds.sources.products.remote.url = '';
+  stored.feeds.sources.products.remote.url_configured = true;
+  await mount('paul-lange-schedule', 'paul-lange');
+  await click(button('Feedy'));
+  const schedule = () => [...document.querySelectorAll('label')]
+    .find(label => label.textContent.includes('Obnovovať produktový feed každých 24 hodín'))?.querySelector('input');
+  assert(schedule().checked);
+  await click(schedule());
+  await click(button('Uložiť'));
+  assert.equal(writes.at(-1).feeds.sources.products.scheduled_refresh, false);
+  assert.equal(writes.at(-1).feeds.sources.products.remote.url_configured, true);
+  await mount('paul-lange-schedule-saved', 'paul-lange');
+  await click(button('Feedy'));
+  assert.equal(schedule().checked, false);
   await act(async () => root.unmount());
   console.log('Supplier configuration UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

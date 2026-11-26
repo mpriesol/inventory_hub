@@ -15,6 +15,9 @@ The shared `operation_log.emit` / `operation_log.context` interface records:
 - Supplier availability worker passes: supplier, feed run ID, start/completion or
   failure. Sloger can have several passes in one durable run; a completed pass
   is not a claim that the whole run or shop publication completed.
+- Scheduled Paul Lange product catalog refreshes. The `supplier_catalog`
+  component records success after commit with the catalog run ID and row count,
+  or failure with a sanitized error code.
 - Husky feed download outcomes and B2B HTTP calls: login/listing phase, page,
   HTTP status, redirects, duration, fixed error code. Page validation records
   missing/mismatched pager markers, observed numeric page, invalid row count,

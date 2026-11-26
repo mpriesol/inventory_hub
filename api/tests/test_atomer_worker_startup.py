@@ -20,6 +20,7 @@ WORKERS = {
     "order_processing_worker": "order-processing",
     "stock_publication_worker": "stock-publication",
     "supplier_availability_worker": "supplier-availability",
+    "supplier_catalog_worker": "supplier-catalog",
     "stock_sync_worker": "stock-sync",
     "fifo_cost_worker": "fifo-cost-sync",
     "invoice_archive_worker": "invoice-archive",

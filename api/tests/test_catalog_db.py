@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -17,9 +19,9 @@ from sqlalchemy.pool import NullPool
 from catalog_fixtures import FakeUpgates, northfinder_product, northfinder_variant, xml_item
 from inventory_hub import config_io
 from inventory_hub.catalog_types import ShopImportPreviewRequest, CatalogProduct, CatalogPrices
-from inventory_hub.db_models import Product, Shop, Supplier, SupplierFeedRun, SupplierProduct, ProductIdentifier, IdentifierType
+from inventory_hub.db_models import FeedRunStatus, Product, Shop, Supplier, SupplierFeed, SupplierFeedRun, SupplierProduct, ProductIdentifier, IdentifierType
 from inventory_hub.db_models_ext import ProductSupplySource, ProductVariantAttribute, ShopProduct, ShopProductContent
-from inventory_hub.services import catalog, catalog_import
+from inventory_hub.services import catalog, catalog_import, supplier_catalog_worker
 
 TEST_URL = os.environ.get("CATALOG_TEST_DATABASE_URL", "")
 
@@ -70,6 +72,65 @@ class CatalogDatabaseTests(unittest.IsolatedAsyncioTestCase):
             result = await catalog.refresh_catalog(db, "paul-lange")
             await db.commit()
             return result
+
+    def configure_remote_catalog(self, **source_settings):
+        path = config_io.supplier_path("paul-lange")
+        cfg = json.loads(path.read_text())
+        cfg["feeds"]["sources"]["products"] = {
+            "mode": "remote", "remote": {"url": "https://supplier.example.test/products.xml"}, **source_settings,
+        }
+        path.write_text(json.dumps(cfg))
+
+    async def test_scheduled_catalog_uses_fresh_promotion_and_serializes_refresh(self):
+        await self.refresh()
+        self.configure_remote_catalog()
+        self.write_feed(xml_item(extra="<PRICE_DISCOUNT>50</PRICE_DISCOUNT><PRICE_DISCOUNT_VAT>61.50</PRICE_DISCOUNT_VAT>"))
+        with patch.object(catalog, "_download", return_value=self.feed) as download:
+            async with self.sessions() as db:
+                self.assertIsNone(await supplier_catalog_worker.refresh_if_due(db))
+                download.assert_not_called()
+                feed = await db.scalar(select(SupplierFeed).where(SupplierFeed.code == "products"))
+                feed.last_run_at -= timedelta(hours=25)
+                await db.commit()
+                updated = await supplier_catalog_worker.refresh_if_due(db)
+                async with self.sessions() as other:
+                    self.assertIsNone(await supplier_catalog_worker.refresh_if_due(other))
+                await db.commit()
+                self.assertIsNone(await supplier_catalog_worker.refresh_if_due(db))
+                result = await catalog.catalog_page(db, "paul-lange", code="A-001")
+                self.assertEqual(result.run_id, updated["run_id"])
+                self.assertEqual(catalog_import.effective_purchase_prices(result.items[0].product),
+                                 (Decimal("50"), Decimal("61.50")))
+                self.assertEqual(await db.scalar(select(func.count()).select_from(Product)), 0)
+                self.assertEqual(await db.scalar(text("SELECT count(*) FROM stock_movements")), 0)
+            download.assert_called_once()
+
+    async def test_scheduled_failure_keeps_previous_catalog_and_waits_before_retry(self):
+        original = await self.refresh()
+        self.configure_remote_catalog()
+        async with self.sessions() as db:
+            feed = await db.scalar(select(SupplierFeed).where(SupplierFeed.code == "products"))
+            feed.last_run_at -= timedelta(hours=25)
+            await db.commit()
+            with patch.object(catalog, "_download", side_effect=catalog.CatalogError("feed_timeout", "fixture")) as download:
+                with self.assertRaisesRegex(catalog.CatalogError, "fixture"):
+                    await supplier_catalog_worker.refresh_if_due(db)
+                self.assertIsNone(await supplier_catalog_worker.refresh_if_due(db))
+                download.assert_called_once()
+            status = await catalog.catalog_status(db, "paul-lange")
+            self.assertEqual((status["run_id"], status["status"]), (original["run_id"], "failed"))
+            failure = await db.scalar(select(SupplierFeedRun).where(SupplierFeedRun.status == FeedRunStatus.failed))
+            failure.started_at -= timedelta(hours=2)
+            await db.commit()
+            with patch.object(catalog, "_download", return_value=self.feed) as download:
+                self.configure_remote_catalog(scheduled_refresh=False)
+                self.assertIsNone(await supplier_catalog_worker.refresh_if_due(db))
+                download.assert_not_called()
+                self.configure_remote_catalog(scheduled_refresh=True)
+                recovered = await supplier_catalog_worker.refresh_if_due(db)
+                await db.commit()
+                self.assertNotEqual(recovered["run_id"], original["run_id"])
+                download.assert_called_once()
 
     async def test_search_without_accents_partial_code_ean_and_all_pages(self):
         await self.refresh()
